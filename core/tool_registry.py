@@ -102,7 +102,7 @@ def get_tool_components(server) -> dict:
 
 
 def filter_server_tools(server):
-    """Remove disabled tools and configure output schemas after registration."""
+    """Remove disabled tools from the server after registration."""
     enabled_tools = get_enabled_tools()
     oauth21_enabled = is_oauth21_enabled()
     permissions_mode = is_permissions_mode()
@@ -116,7 +116,6 @@ def filter_server_tools(server):
         return
 
     tools_removed = 0
-    schemas_cleared = 0
     tool_components = get_tool_components(server)
 
     allowed_scopes = set(get_all_read_only_scopes()) if read_only_mode else None
@@ -199,14 +198,6 @@ def filter_server_tools(server):
             continue
         tools_removed += 1
 
-    # Clear output_schema for string-wrapped tools.
-    # This ensures clean content block display instead of {"result": "..."}.
-    for tool in get_tool_components(server).values():
-        output_schema = getattr(tool, "output_schema", None)
-        if isinstance(output_schema, dict) and output_schema.get("x-fastmcp-wrap-result"):
-            tool.output_schema = None
-            schemas_cleared += 1
-
     if tools_removed > 0:
         enabled_count = len(enabled_tools) if enabled_tools is not None else "all"
         if permissions_mode:
@@ -219,8 +210,43 @@ def filter_server_tools(server):
             f"Tool filtering: removed {tools_removed} tools, {enabled_count} enabled. Mode: {mode}"
         )
 
+
+def _is_wrapped_string_output_schema(tool, output_schema: dict) -> bool:
+    """Check if tool output schema is FastMCP's wrapped-string schema."""
+    if not output_schema.get("x-fastmcp-wrap-result"):
+        return False
+
+    # FastMCP FunctionTool stores inferred return annotation.
+    if getattr(tool, "return_type", None) is str:
+        return True
+
+    # Fallback: detect wrapped {"result": {"type": "string"}} schema shape.
+    result_schema = output_schema.get("properties", {}).get("result", {})
+    return isinstance(result_schema, dict) and result_schema.get("type") == "string"
+
+
+def normalize_string_tool_output_schemas(server) -> int:
+    """
+    Clear wrapped output schemas for string-returning tools.
+
+    FastMCP wraps non-object return types for structured output validation.
+    For plain text tools, clearing output_schema keeps clean TextContent output
+    without structured {"result": "..."} wrappers.
+    """
+    schemas_cleared = 0
+
+    for tool in get_tool_components(server).values():
+        output_schema = getattr(tool, "output_schema", None)
+        if isinstance(output_schema, dict) and _is_wrapped_string_output_schema(
+            tool, output_schema
+        ):
+            tool.output_schema = None
+            schemas_cleared += 1
+
     if schemas_cleared > 0:
         logger.info(
             "Content blocks: cleared output_schema on %s string-returning tools",
             schemas_cleared,
         )
+
+    return schemas_cleared
