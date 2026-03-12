@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, List, Tuple, Optional
 from urllib.parse import urlparse
 
-from gdocs.docs_helpers import validate_operation
+from gdocs.docs_helpers import validate_operation, VALID_NAMED_STYLE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -317,15 +317,10 @@ class ValidationManager:
             )
 
         if named_style_type is not None:
-            valid_styles = [
-                "NORMAL_TEXT", "TITLE", "SUBTITLE",
-                "HEADING_1", "HEADING_2", "HEADING_3",
-                "HEADING_4", "HEADING_5", "HEADING_6",
-            ]
-            if named_style_type not in valid_styles:
+            if named_style_type not in VALID_NAMED_STYLE_TYPES:
                 return (
                     False,
-                    f"Invalid named_style_type '{named_style_type}'. Must be one of: {', '.join(valid_styles)}",
+                    f"Invalid named_style_type '{named_style_type}'. Must be one of: {', '.join(VALID_NAMED_STYLE_TYPES)}",
                 )
 
         if heading_level is not None:
