@@ -6,6 +6,7 @@ In stdio mode: Starts a minimal HTTP server just for OAuth callbacks
 """
 
 import asyncio
+import errno
 import logging
 import threading
 import time
@@ -132,9 +133,15 @@ class MinimalOAuthServer:
             )
 
     def is_actually_running(self) -> bool:
-        """Check if the server is actually accepting connections on its port."""
-        if not self.is_running:
-            return False
+        """
+        Check whether the callback port is currently usable.
+
+        A fresh MinimalOAuthServer starts with ``is_running=False`` in the constructor,
+        but ``ensure_oauth_callback_available()`` still calls this method before deciding
+        whether ``start()`` needs to bind the shared callback port. Keep the active
+        connection probe first, then treat ``EADDRINUSE`` from a short-lived bind as
+        another instance already owning the callback endpoint.
+        """
         if self.server_thread and not self.server_thread.is_alive():
             return False
         try:
@@ -145,9 +152,22 @@ class MinimalOAuthServer:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(1.0)
-                return s.connect_ex((hostname, self.port)) == 0
+                if s.connect_ex((hostname, self.port)) == 0:
+                    return True
         except Exception:
             return False
+
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind((hostname, self.port))
+        except OSError as exc:
+            if exc.errno == errno.EADDRINUSE:
+                return True
+            return False
+        except Exception:
+            return False
+
+        return False
 
     def matches_endpoint(self, port: int, base_uri: str) -> bool:
         """Return True when this server instance matches the requested callback endpoint."""
