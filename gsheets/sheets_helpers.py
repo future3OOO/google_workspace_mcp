@@ -997,19 +997,21 @@ async def _fetch_cell_formulas(
     formula_values = result.get("values", [])
     formulas: list[dict[str, str]] = []
 
-    _, range_part = _split_sheet_and_range(resolved_range)
+    sheet_name, range_part = _split_sheet_and_range(resolved_range)
     start_part = range_part.split(":")[0] if ":" in range_part else range_part
     start_col_idx, start_row_idx = _parse_a1_part(start_part)
-    start_col = start_col_idx if start_col_idx is not None else 0
-    start_row = start_row_idx if start_row_idx is not None else 0
+    base_col = start_col_idx if start_col_idx is not None else 0
+    base_row = start_row_idx if start_row_idx is not None else 0
 
-    for row_idx, formula_row in enumerate(formula_values):
-        for col_idx, cell_value in enumerate(formula_row):
+    for row_offset, formula_row in enumerate(formula_values):
+        for col_offset, cell_value in enumerate(formula_row):
             if isinstance(cell_value, str) and cell_value.startswith("="):
-                actual_col = start_col + col_idx
-                actual_row = start_row + row_idx + 1
-                col_label = _index_to_column(actual_col)
-                formulas.append({"cell": f"{col_label}{actual_row}", "formula": cell_value})
+                abs_col = base_col + col_offset
+                abs_row = base_row + row_offset
+                cell_ref = f"{_index_to_column(abs_col)}{abs_row + 1}"
+                if sheet_name:
+                    cell_ref = f"{_quote_sheet_title_for_a1(sheet_name)}!{cell_ref}"
+                formulas.append({"cell": cell_ref, "formula": cell_value})
 
     return _format_sheet_formula_section(formulas=formulas, range_label=resolved_range)
 
