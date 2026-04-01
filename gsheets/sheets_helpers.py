@@ -1034,9 +1034,7 @@ def _format_sheet_formula_section(
         if len(formulas) > max_details
         else ""
     )
-    return (
-        f"\n\nFormula cells in range '{range_label}':\n" + "\n".join(lines) + suffix
-    )
+    return f"\n\nFormula cells in range '{range_label}':\n" + "\n".join(lines) + suffix
 
 
 async def _fetch_grid_metadata(

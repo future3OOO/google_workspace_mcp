@@ -261,7 +261,13 @@ async def read_sheet_values(
     )
 
     logger.info(f"Successfully read {len(values)} rows for {user_google_email}.")
-    return text_output + hyperlink_section + notes_section + formula_section + detailed_errors_section
+    return (
+        text_output
+        + hyperlink_section
+        + notes_section
+        + formula_section
+        + detailed_errors_section
+    )
 
 
 @server.tool()
