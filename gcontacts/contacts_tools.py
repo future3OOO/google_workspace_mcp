@@ -517,6 +517,7 @@ def _merge_phones(
     Returns:
         Merged phone list.
     """
+
     def phone_key(phone: Dict[str, Any]) -> str:
         return _normalize_phone(phone.get("canonicalForm") or phone.get("value", ""))
 
@@ -600,7 +601,7 @@ def _merge_organizations(
     """
 
     def organization_key(org: Dict[str, Any]) -> tuple[str, str, str, str, str]:
-        job_description = (org.get("jobDescription") or org.get("description") or "")
+        job_description = org.get("jobDescription") or org.get("description") or ""
         return (
             ((org.get("name") or "").strip().lower()),
             ((org.get("title") or "").strip().lower()),

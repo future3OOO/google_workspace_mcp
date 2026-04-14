@@ -218,9 +218,7 @@ class TestBuildPersonBodyNew:
         assert body["phoneNumbers"][1] == {"value": "+78482123456", "type": "work"}
 
     def test_phones_label_falls_back_to_type_for_raw_dict(self):
-        body = _build_person_body(
-            phones=[{"number": "250", "label": "АТС Greenline"}]
-        )
+        body = _build_person_body(phones=[{"number": "250", "label": "АТС Greenline"}])
         assert body["phoneNumbers"][0] == {
             "value": "250",
             "type": "АТС Greenline",
@@ -509,7 +507,11 @@ class TestMergePhones:
 
     def test_merge_deduplicates_when_existing_only_has_canonical_form(self):
         existing = [
-            {"value": "+7 927 000-00-00", "canonicalForm": "+79270000000", "type": "mobile"}
+            {
+                "value": "+7 927 000-00-00",
+                "canonicalForm": "+79270000000",
+                "type": "mobile",
+            }
         ]
         new = [{"value": "+79270000000", "type": "mobile"}]
         result = _merge_phones(existing, new, "merge")
