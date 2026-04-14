@@ -1234,7 +1234,13 @@ uv run main.py --transport streamable-http
 
 # Then add to Claude Code
 claude mcp add --transport http workspace-mcp http://localhost:8000/mcp
+
+# Optional: install the bundled Claude skill for better Workspace tool routing
+mkdir -p ~/.claude/skills
+ln -s "$(pwd)/skills/managing-google-workspace" ~/.claude/skills/managing-google-workspace
 ```
+
+Or copy `skills/managing-google-workspace` into `~/.claude/skills/managing-google-workspace` if you prefer not to symlink it.
 </details>
 
 #### Reverse Proxy Setup
