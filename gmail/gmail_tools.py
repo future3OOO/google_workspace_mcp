@@ -746,16 +746,29 @@ def _extract_preserved_attachments(
     preserved_attachments: List[dict[str, Any]] = []
 
     for part in parsed_message.walk():
-        if part.is_multipart():
-            continue
-
-        content = part.get_payload(decode=True)
-        if content is None:
-            continue
-
         disposition = part.get_content_disposition()
         content_id = part.get("Content-ID")
         filename = part.get_filename()
+        if part.is_multipart() and not (
+            filename or disposition in {"attachment", "inline"} or content_id
+        ):
+            continue
+
+        if part.get_content_type() == "message/rfc822":
+            content_message = part.get_content()
+            content = (
+                content_message.as_bytes(policy=SMTP)
+                if hasattr(content_message, "as_bytes")
+                else None
+            )
+        else:
+            content = part.get_payload(decode=True)
+            if content is None and part.is_multipart():
+                content = part.as_bytes(policy=SMTP)
+
+        if content is None:
+            continue
+
         if not (filename or disposition in {"attachment", "inline"} or content_id):
             continue
 
@@ -766,6 +779,7 @@ def _extract_preserved_attachments(
                 "mime_type": part.get_content_type() or "application/octet-stream",
                 "disposition": disposition,
                 "content_id": content_id,
+                "_preserved": True,
             }
         )
 
@@ -858,7 +872,11 @@ def _prepare_gmail_message(
     else:
         message.set_content(body)
 
-    html_part = message.get_body(preferencelist=("html",)) if normalized_format == "html" else None
+    html_part = (
+        message.get_body(preferencelist=("html",))
+        if normalized_format == "html"
+        else None
+    )
 
     for attachment in attachments or []:
         file_path = attachment.get("path")
@@ -867,6 +885,7 @@ def _prepare_gmail_message(
         mime_type = attachment.get("mime_type")
         disposition = attachment.get("disposition")
         content_id = attachment.get("content_id")
+        preserved_attachment = bool(attachment.get("_preserved"))
 
         try:
             if file_path:
@@ -886,7 +905,9 @@ def _prepare_gmail_message(
                     if not mime_type:
                         mime_type = "application/octet-stream"
             elif content_base64:
-                if not filename and not (content_id or disposition == "inline"):
+                if not filename and not (
+                    content_id or disposition == "inline" or preserved_attachment
+                ):
                     logger.warning("Skipping attachment: missing filename")
                     continue
 
@@ -900,9 +921,7 @@ def _prepare_gmail_message(
             safe_filename = None
             if filename:
                 safe_filename = (
-                    filename.replace("\r", "")
-                    .replace("\n", "")
-                    .replace("\x00", "")
+                    filename.replace("\r", "").replace("\n", "").replace("\x00", "")
                 ) or None
 
             main_type, sub_type = (
@@ -1995,19 +2014,20 @@ async def _build_draft_request_body(
     if quote_original and not thread_id:
         raise UserInputError("quote_original requires thread_id.")
 
-    sender_email = from_email or user_google_email
+    sender_email = user_google_email if from_email is None else from_email
+    signature_sender_email = sender_email or user_google_email
     draft_body = body
     signature_html = ""
     if include_signature:
         signature_html = await _get_send_as_signature_html(
-            service, from_email=sender_email
+            service, from_email=signature_sender_email
         )
 
     reply_context = None
     if thread_id and (
         quote_original
-        or not in_reply_to
-        or not references
+        or in_reply_to is None
+        or references is None
         or to is None
         or not subject.strip()
     ):
@@ -2018,7 +2038,7 @@ async def _build_draft_request_body(
             include_bodies=quote_original,
         )
 
-    if thread_id and (not in_reply_to or not references):
+    if thread_id and (in_reply_to is None or references is None):
         thread_message_ids = (
             reply_context.get("message_ids", []) if reply_context else []
         )
@@ -2132,22 +2152,38 @@ async def update_gmail_draft(
     from_email: Annotated[
         Optional[str],
         Field(
-            description="Optional 'Send As' alias email address. Must be configured in Gmail settings.",
+            description=(
+                "Optional 'Send As' alias email address. Omit to preserve the existing alias; "
+                "pass an empty string to clear. Must be configured in Gmail settings."
+            ),
         ),
     ] = None,
     thread_id: Annotated[
         Optional[str],
         Field(
-            description="Optional Gmail thread ID to keep the draft associated with."
+            description=(
+                "Optional Gmail thread ID to keep the draft associated with. Omit to preserve "
+                "the existing thread association; pass an empty string to clear."
+            )
         ),
     ] = None,
     in_reply_to: Annotated[
         Optional[str],
-        Field(description="Optional RFC Message-ID of the message being replied to."),
+        Field(
+            description=(
+                "Optional RFC Message-ID of the message being replied to. Omit to preserve the "
+                "existing value; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     references: Annotated[
         Optional[str],
-        Field(description="Optional chain of Message-IDs for proper threading."),
+        Field(
+            description=(
+                "Optional chain of Message-IDs for proper threading. Omit to preserve the "
+                "existing value; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     attachments: Annotated[
         Optional[DictList],
@@ -2197,10 +2233,26 @@ async def update_gmail_draft(
             service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
         )
         message_data = existing_draft.get("message", {})
-        raw_message = message_data["raw"]
-        parsed_message = BytesParser(policy=policy.default).parsebytes(
-            base64.urlsafe_b64decode(raw_message + "=" * (-len(raw_message) % 4))
-        )
+        raw_message = message_data.get("raw")
+        if not raw_message:
+            raise UserInputError(
+                f"Failed to retrieve raw message content for draft '{draft_id}'. "
+                "The draft may have been deleted or the API returned an unexpected response."
+            )
+        try:
+            padded_raw_message = raw_message + "=" * (-len(raw_message) % 4)
+            parsed_message = BytesParser(policy=policy.default).parsebytes(
+                base64.b64decode(
+                    padded_raw_message,
+                    altchars=b"-_",
+                    validate=True,
+                )
+            )
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise UserInputError(
+                f"Failed to parse draft '{draft_id}' raw MIME content. "
+                "The draft response appears malformed."
+            ) from exc
         existing_headers = {
             name: str(value) if (value := parsed_message.get(name)) else None
             for name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References")
