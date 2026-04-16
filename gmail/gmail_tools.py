@@ -14,9 +14,11 @@ import mimetypes
 from html.parser import HTMLParser
 from typing import Annotated, Optional, List, Dict, Literal, Any
 
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from email.policy import SMTP
-from email.utils import formataddr
+from email.utils import formataddr, parseaddr
 
 from pydantic import Field
 from googleapiclient.errors import HttpError
@@ -737,6 +739,39 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
     return context.get("message_ids", [])
 
 
+def _extract_preserved_attachments(
+    parsed_message: EmailMessage,
+) -> List[dict[str, Any]]:
+    """Extract attachment-like MIME parts that should survive draft updates."""
+    preserved_attachments: List[dict[str, Any]] = []
+
+    for part in parsed_message.walk():
+        if part.is_multipart():
+            continue
+
+        content = part.get_payload(decode=True)
+        if content is None:
+            continue
+
+        disposition = part.get_content_disposition()
+        content_id = part.get("Content-ID")
+        filename = part.get_filename()
+        if not (filename or disposition in {"attachment", "inline"} or content_id):
+            continue
+
+        preserved_attachments.append(
+            {
+                "filename": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+                "mime_type": part.get_content_type() or "application/octet-stream",
+                "disposition": disposition,
+                "content_id": content_id,
+            }
+        )
+
+    return preserved_attachments
+
+
 def _prepare_gmail_message(
     subject: str,
     body: str,
@@ -749,7 +784,7 @@ def _prepare_gmail_message(
     body_format: Literal["plain", "html"] = "plain",
     from_email: Optional[str] = None,
     from_name: Optional[str] = None,
-    attachments: Optional[List[Dict[str, str]]] = None,
+    attachments: Optional[List[dict[str, Any]]] = None,
 ) -> tuple[str, Optional[str], int, List[str]]:
     """
     Prepare a Gmail message with threading and attachment support.
@@ -823,11 +858,15 @@ def _prepare_gmail_message(
     else:
         message.set_content(body)
 
+    html_part = message.get_body(preferencelist=("html",)) if normalized_format == "html" else None
+
     for attachment in attachments or []:
         file_path = attachment.get("path")
         filename = attachment.get("filename")
         content_base64 = attachment.get("content")
         mime_type = attachment.get("mime_type")
+        disposition = attachment.get("disposition")
+        content_id = attachment.get("content_id")
 
         try:
             if file_path:
@@ -847,7 +886,7 @@ def _prepare_gmail_message(
                     if not mime_type:
                         mime_type = "application/octet-stream"
             elif content_base64:
-                if not filename:
+                if not filename and not (content_id or disposition == "inline"):
                     logger.warning("Skipping attachment: missing filename")
                     continue
 
@@ -858,26 +897,45 @@ def _prepare_gmail_message(
                 logger.warning("Skipping attachment: missing both path and content")
                 continue
 
-            safe_filename = (
-                (filename or "attachment")
-                .replace("\r", "")
-                .replace("\n", "")
-                .replace("\x00", "")
-            ) or "attachment"
+            safe_filename = None
+            if filename:
+                safe_filename = (
+                    filename.replace("\r", "")
+                    .replace("\n", "")
+                    .replace("\x00", "")
+                ) or None
 
             main_type, sub_type = (
                 mime_type.split("/", 1)
                 if mime_type and "/" in mime_type
                 else ("application", "octet-stream")
             )
-            message.add_attachment(
-                file_data,
-                maintype=main_type,
-                subtype=sub_type,
-                filename=safe_filename,
-            )
+            attachment_kwargs = {
+                "maintype": main_type,
+                "subtype": sub_type,
+            }
+            if safe_filename is not None:
+                attachment_kwargs["filename"] = safe_filename
+            if content_id:
+                attachment_kwargs["cid"] = content_id
+            if disposition:
+                attachment_kwargs["disposition"] = disposition
+
+            if html_part is not None and (content_id or disposition == "inline"):
+                html_part.add_related(
+                    file_data,
+                    maintype=main_type,
+                    subtype=sub_type,
+                    cid=content_id,
+                    filename=safe_filename,
+                    disposition=disposition or "inline",
+                )
+            else:
+                message.add_attachment(file_data, **attachment_kwargs)
             attached_count += 1
-            logger.info(f"Attached file: {safe_filename} ({len(file_data)} bytes)")
+            logger.info(
+                f"Attached file: {safe_filename or content_id or file_path or 'attachment'} ({len(file_data)} bytes)"
+            )
         except (binascii.Error, ValueError) as e:
             logger.error(f"Failed to decode attachment {filename or file_path}: {e}")
             attachment_errors.append(_format_attachment_error(file_path, filename, e))
@@ -1882,8 +1940,61 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
-    # Prepare the email message
-    # Use from_email (Send As alias) if provided, otherwise default to authenticated user
+    (
+        draft_body,
+        attached_count,
+        requested_attachment_count,
+    ) = await _build_draft_request_body(
+        service=service,
+        user_google_email=user_google_email,
+        subject=subject,
+        body=body,
+        body_format=body_format,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        from_name=from_name,
+        from_email=from_email,
+        thread_id=thread_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        attachments=attachments,
+        include_signature=include_signature,
+        quote_original=quote_original,
+    )
+
+    created_draft = await asyncio.to_thread(
+        service.users().drafts().create(userId="me", body=draft_body).execute
+    )
+    draft_id = created_draft.get("id")
+    attachment_info = _format_attachment_result(
+        attached_count, requested_attachment_count
+    )
+    return f"Draft created{attachment_info}! Draft ID: {draft_id}"
+
+
+async def _build_draft_request_body(
+    service,
+    user_google_email: str,
+    subject: str,
+    body: str,
+    body_format: Literal["plain", "html"],
+    to: Optional[str],
+    cc: Optional[str],
+    bcc: Optional[str],
+    from_name: Optional[str],
+    from_email: Optional[str],
+    thread_id: Optional[str],
+    in_reply_to: Optional[str],
+    references: Optional[str],
+    attachments: Optional[List[dict[str, Any]]],
+    include_signature: bool,
+    quote_original: bool,
+) -> tuple[dict, int, int]:
+    """Build the Gmail draft request body shared by create and update."""
+    if quote_original and not thread_id:
+        raise UserInputError("quote_original requires thread_id.")
+
     sender_email = from_email or user_google_email
     draft_body = body
     signature_html = ""
@@ -1893,7 +2004,13 @@ async def draft_gmail_message(
         )
 
     reply_context = None
-    if thread_id and (quote_original or not in_reply_to or not references or not to):
+    if thread_id and (
+        quote_original
+        or not in_reply_to
+        or not references
+        or to is None
+        or not subject.strip()
+    ):
         reply_context = await _fetch_thread_reply_context(
             service,
             thread_id,
@@ -1910,7 +2027,7 @@ async def draft_gmail_message(
         )
 
     target_reply = reply_context.get("target") if reply_context else None
-    if thread_id and not to and target_reply:
+    if thread_id and to is None and target_reply:
         to = target_reply.get("reply_to") or target_reply.get("from") or to
     if thread_id and not subject.strip() and target_reply:
         subject = target_reply.get("subject") or subject
@@ -1957,22 +2074,216 @@ async def draft_gmail_message(
             f"{details}"
         )
 
-    # Create a draft instead of sending
-    draft_body = {"message": {"raw": raw_message}}
-
-    # Associate with thread if provided
+    request_body = {"message": {"raw": raw_message}}
     if thread_id_final:
-        draft_body["message"]["threadId"] = thread_id_final
+        request_body["message"]["threadId"] = thread_id_final
 
-    # Create the draft
-    created_draft = await asyncio.to_thread(
-        service.users().drafts().create(userId="me", body=draft_body).execute
+    return request_body, attached_count, requested_attachment_count
+
+
+@server.tool()
+@handle_http_errors("update_gmail_draft", service_type="gmail")
+@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+async def update_gmail_draft(
+    service,
+    user_google_email: str,
+    draft_id: Annotated[str, Field(description="Gmail draft ID to update.")],
+    subject: Annotated[str, Field(description="Replacement email subject.")],
+    body: Annotated[str, Field(description="Replacement email body.")],
+    body_format: Annotated[
+        Literal["plain", "html"],
+        Field(
+            description="Replacement body format. Use 'plain' for plaintext or 'html' for HTML content.",
+        ),
+    ] = "plain",
+    to: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Optional replacement recipient email address. Omit to preserve "
+                "existing recipients; pass an empty string to clear."
+            ),
+        ),
+    ] = None,
+    cc: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Optional replacement CC email address. Omit to preserve existing "
+                "CC recipients; pass an empty string to clear."
+            ),
+        ),
+    ] = None,
+    bcc: Annotated[
+        Optional[str],
+        Field(
+            description=(
+                "Optional replacement BCC email address. Omit to preserve existing "
+                "BCC recipients; pass an empty string to clear."
+            ),
+        ),
+    ] = None,
+    from_name: Annotated[
+        Optional[str],
+        Field(
+            description="Optional sender display name. Omit to preserve; pass an empty string to clear.",
+        ),
+    ] = None,
+    from_email: Annotated[
+        Optional[str],
+        Field(
+            description="Optional 'Send As' alias email address. Must be configured in Gmail settings.",
+        ),
+    ] = None,
+    thread_id: Annotated[
+        Optional[str],
+        Field(
+            description="Optional Gmail thread ID to keep the draft associated with."
+        ),
+    ] = None,
+    in_reply_to: Annotated[
+        Optional[str],
+        Field(description="Optional RFC Message-ID of the message being replied to."),
+    ] = None,
+    references: Annotated[
+        Optional[str],
+        Field(description="Optional chain of Message-IDs for proper threading."),
+    ] = None,
+    attachments: Annotated[
+        Optional[DictList],
+        Field(
+            description=(
+                "Optional replacement attachments. Omit to preserve existing attachments; "
+                "pass an empty list to clear. Each can have: 'path', OR 'content' + "
+                "'filename'. Optional 'mime_type'."
+            ),
+        ),
+    ] = None,
+    include_signature: Annotated[
+        bool,
+        Field(
+            description="Whether to append the Gmail signature from Settings > Signature when available. Defaults to true.",
+        ),
+    ] = True,
+    quote_original: Annotated[
+        bool,
+        Field(
+            description="Whether to include the original message as a quoted reply. Requires thread_id. Defaults to false.",
+        ),
+    ] = False,
+) -> str:
+    """Updates an existing Gmail draft while preserving omitted draft fields."""
+    logger.info(
+        f"[update_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
     )
-    draft_id = created_draft.get("id")
+
+    draft_id = draft_id.strip()
+    if not draft_id:
+        raise UserInputError("draft_id is required.")
+
+    preserve_from_name = from_name is None
+    if (
+        preserve_from_name
+        or to is None
+        or cc is None
+        or bcc is None
+        or from_email is None
+        or thread_id is None
+        or in_reply_to is None
+        or references is None
+        or attachments is None
+    ):
+        existing_draft = await asyncio.to_thread(
+            service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
+        )
+        message_data = existing_draft.get("message", {})
+        raw_message = message_data["raw"]
+        parsed_message = BytesParser(policy=policy.default).parsebytes(
+            base64.urlsafe_b64decode(raw_message + "=" * (-len(raw_message) % 4))
+        )
+        existing_headers = {
+            name: str(value) if (value := parsed_message.get(name)) else None
+            for name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References")
+        }
+        existing_from_name, existing_from_email = parseaddr(
+            existing_headers["From"] or ""
+        )
+
+        if to is None:
+            to = existing_headers["To"] or ""
+        cc = existing_headers["Cc"] if cc is None else cc
+        bcc = existing_headers["Bcc"] if bcc is None else bcc
+        if from_email is None:
+            from_email = existing_from_email or existing_headers["From"]
+        if preserve_from_name:
+            from_name = existing_from_name or None
+        thread_id = message_data.get("threadId") if thread_id is None else thread_id
+        in_reply_to = (
+            existing_headers["In-Reply-To"] if in_reply_to is None else in_reply_to
+        )
+        references = (
+            existing_headers["References"] if references is None else references
+        )
+        if attachments is None:
+            attachments = _extract_preserved_attachments(parsed_message)
+
+    (
+        draft_body,
+        attached_count,
+        requested_attachment_count,
+    ) = await _build_draft_request_body(
+        service=service,
+        user_google_email=user_google_email,
+        subject=subject,
+        body=body,
+        body_format=body_format,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        from_name=from_name,
+        from_email=from_email,
+        thread_id=thread_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        attachments=attachments,
+        include_signature=include_signature,
+        quote_original=quote_original,
+    )
+
+    updated_draft = await asyncio.to_thread(
+        service.users()
+        .drafts()
+        .update(userId="me", id=draft_id, body=draft_body)
+        .execute
+    )
+    updated_draft_id = updated_draft.get("id") or draft_id
     attachment_info = _format_attachment_result(
         attached_count, requested_attachment_count
     )
-    return f"Draft created{attachment_info}! Draft ID: {draft_id}"
+    return f"Draft updated{attachment_info}! Draft ID: {updated_draft_id}"
+
+
+@server.tool()
+@handle_http_errors("delete_gmail_draft", service_type="gmail")
+@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+async def delete_gmail_draft(
+    service,
+    user_google_email: str,
+    draft_id: Annotated[str, Field(description="Gmail draft ID to delete.")],
+) -> str:
+    """Deletes an existing Gmail draft by draft ID."""
+    logger.info(
+        f"[delete_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
+    )
+
+    draft_id = draft_id.strip()
+    if not draft_id:
+        raise UserInputError("draft_id is required.")
+
+    await asyncio.to_thread(
+        service.users().drafts().delete(userId="me", id=draft_id).execute
+    )
+    return f"Draft deleted! Draft ID: {draft_id}"
 
 
 def _format_thread_content(

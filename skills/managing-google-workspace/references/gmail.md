@@ -4,7 +4,7 @@ MCP tools for Gmail message search, sending, drafting, labels, and filters. All 
 
 ## Contents
 - Search & Read: search_gmail_messages, get_gmail_message_content, get_gmail_messages_content_batch, get_gmail_thread_content, get_gmail_threads_content_batch, get_gmail_attachment_content
-- Send & Draft: send_gmail_message, draft_gmail_message
+- Send & Draft: send_gmail_message, draft_gmail_message, update_gmail_draft, delete_gmail_draft
 - Label Management: list_gmail_labels, manage_gmail_label, modify_gmail_message_labels, batch_modify_gmail_message_labels
 - Filter Management: list_gmail_filters, manage_gmail_filter
 - Tips
@@ -112,6 +112,36 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+
+### update_gmail_draft
+Replace the subject/body of an existing draft while preserving omitted draft fields. Omit `to`, `cc`, `bcc`, `from_name`, `thread_id`, `in_reply_to`, `references`, or `attachments` to preserve the existing value; pass an empty string/list to clear the field where supported.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| draft_id | string | yes | | Gmail draft ID to update |
+| subject | string | yes | | Replacement subject |
+| body | string | yes | | Replacement body |
+| body_format | string | no | "plain" | "plain" or "html" |
+| user_google_email | string | yes | | |
+| to | string | no | | Omit to preserve; empty string clears |
+| cc | string | no | | Omit to preserve; empty string clears |
+| bcc | string | no | | Omit to preserve; empty string clears |
+| from_name | string | no | | Omit to preserve; empty string clears |
+| from_email | string | no | | Omit to preserve existing alias |
+| thread_id | string | no | | Omit to preserve current thread association |
+| in_reply_to | string | no | | Omit to preserve current Message-ID linkage |
+| references | string | no | | Omit to preserve current threading chain |
+| attachments | array | no | | Omit to preserve existing attachments/inline parts; empty list clears |
+| include_signature | boolean | no | true | Append Gmail signature if available |
+| quote_original | boolean | no | false | Include original quoted content (requires thread_id) |
+
+### delete_gmail_draft
+Delete an existing draft by Gmail draft ID.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| draft_id | string | yes | | Gmail draft ID to delete |
+| user_google_email | string | yes | | |
 
 ---
 
