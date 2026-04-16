@@ -7,6 +7,7 @@ for reuse across modules (Drive uploads, Gmail URL attachments, etc.).
 """
 
 import ipaddress
+import asyncio
 import logging
 import socket
 from contextlib import asynccontextmanager
@@ -28,7 +29,7 @@ def redact_url(url: str) -> str:
     return f"{parsed_url.hostname}{path}"
 
 
-def resolve_and_validate_host(hostname: str) -> list[str]:
+async def resolve_and_validate_host(hostname: str) -> list[str]:
     """
     Resolve a hostname to IP addresses and validate none are private/internal.
 
@@ -49,7 +50,10 @@ def resolve_and_validate_host(hostname: str) -> list[str]:
 
     # Resolve hostname using getaddrinfo (handles both IPv4 and IPv6)
     try:
-        addr_infos = socket.getaddrinfo(hostname, None)
+        loop = asyncio.get_running_loop()
+        addr_infos = await loop.run_in_executor(
+            None, socket.getaddrinfo, hostname, None
+        )
     except socket.gaierror as e:
         raise ValueError(
             f"Cannot resolve hostname '{hostname}': {e}. "
@@ -76,7 +80,7 @@ def resolve_and_validate_host(hostname: str) -> list[str]:
     return resolved_ips
 
 
-def validate_url_not_internal(url: str) -> list[str]:
+async def validate_url_not_internal(url: str) -> list[str]:
     """
     Validate that a URL doesn't point to internal/private networks (SSRF protection).
 
@@ -87,7 +91,7 @@ def validate_url_not_internal(url: str) -> list[str]:
         ValueError: If URL points to localhost or private IP ranges.
     """
     parsed = urlparse(url)
-    return resolve_and_validate_host(parsed.hostname)
+    return await resolve_and_validate_host(parsed.hostname)
 
 
 def format_host_header(hostname: str, scheme: str, port: Optional[int]) -> str:
@@ -146,7 +150,7 @@ async def fetch_url_with_pinned_ip(url: str) -> httpx.Response:
     if not parsed_url.hostname:
         raise ValueError(f"Invalid URL: missing hostname ({redacted_url})")
 
-    resolved_ips = validate_url_not_internal(url)
+    resolved_ips = await validate_url_not_internal(url)
     host_header = format_host_header(
         parsed_url.hostname, parsed_url.scheme, parsed_url.port
     )
@@ -169,7 +173,7 @@ async def fetch_url_with_pinned_ip(url: str) -> httpx.Response:
             last_error = exc
             logger.warning(
                 f"[ssrf_safe_fetch] Failed request via resolved IP {resolved_ip} for host "
-                f"{parsed_url.hostname}: {exc}"
+                f"{parsed_url.hostname}: {exc.__class__.__name__}"
             )
 
     raise Exception(
@@ -255,7 +259,7 @@ async def ssrf_safe_stream(
         if not parsed.hostname:
             raise ValueError(f"Invalid URL: missing hostname ({redacted_url})")
 
-        resolved_ips = validate_url_not_internal(current_url)
+        resolved_ips = await validate_url_not_internal(current_url)
         host_header = format_host_header(parsed.hostname, parsed.scheme, parsed.port)
 
         last_error: Optional[Exception] = None
@@ -279,7 +283,7 @@ async def ssrf_safe_stream(
                 await client.aclose()
                 logger.warning(
                     f"[ssrf_safe_stream] Failed via IP {resolved_ip} for "
-                    f"{parsed.hostname}: {exc}"
+                    f"{parsed.hostname}: {exc.__class__.__name__}"
                 )
             except Exception:
                 await client.aclose()

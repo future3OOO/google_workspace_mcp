@@ -35,11 +35,12 @@ async def test_download_url_to_bytes_streams_content(monkeypatch):
         drive_tools, "_ssrf_safe_stream", _mock_stream_response(response)
     )
 
-    data, content_type = await drive_tools._download_url_to_bytes(
+    data_file, content_type = await drive_tools._download_url_to_bytes(
         "https://example.com/file.pdf"
     )
 
-    assert data == b"abcdef"
+    with data_file:
+        assert data_file.read() == b"abcdef"
     assert content_type == "application/pdf"
 
 

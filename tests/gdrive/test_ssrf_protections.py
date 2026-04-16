@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from core import http_utils
 
 
-def test_resolve_and_validate_host_fails_closed_on_dns_error(monkeypatch):
+@pytest.mark.asyncio
+async def test_resolve_and_validate_host_fails_closed_on_dns_error(monkeypatch):
     """DNS resolution failures must fail closed."""
 
     def fake_getaddrinfo(hostname, port):
@@ -23,10 +24,11 @@ def test_resolve_and_validate_host_fails_closed_on_dns_error(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     with pytest.raises(ValueError, match="Refusing request \\(fail-closed\\)"):
-        http_utils.resolve_and_validate_host("example.com")
+        await http_utils.resolve_and_validate_host("example.com")
 
 
-def test_resolve_and_validate_host_rejects_ipv6_private(monkeypatch):
+@pytest.mark.asyncio
+async def test_resolve_and_validate_host_rejects_ipv6_private(monkeypatch):
     """IPv6 internal addresses must be rejected."""
 
     def fake_getaddrinfo(hostname, port):
@@ -43,10 +45,11 @@ def test_resolve_and_validate_host_rejects_ipv6_private(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
     with pytest.raises(ValueError, match="private/internal networks"):
-        http_utils.resolve_and_validate_host("ipv6-internal.example")
+        await http_utils.resolve_and_validate_host("ipv6-internal.example")
 
 
-def test_resolve_and_validate_host_deduplicates_addresses(monkeypatch):
+@pytest.mark.asyncio
+async def test_resolve_and_validate_host_deduplicates_addresses(monkeypatch):
     """Duplicate DNS answers should be de-duplicated while preserving order."""
 
     def fake_getaddrinfo(hostname, port):
@@ -76,7 +79,7 @@ def test_resolve_and_validate_host_deduplicates_addresses(monkeypatch):
 
     monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
 
-    assert http_utils.resolve_and_validate_host("example.com") == [
+    assert await http_utils.resolve_and_validate_host("example.com") == [
         "93.184.216.34",
         "2606:2800:220:1:248:1893:25c8:1946",
     ]
@@ -107,8 +110,11 @@ async def test_fetch_url_with_pinned_ip_uses_pinned_target_and_host_header(monke
         async def send(self, request):
             return httpx.Response(200, request=httpx.Request("GET", request["url"]))
 
+    async def fake_validate_url_not_internal(_url):
+        return ["93.184.216.34"]
+
     monkeypatch.setattr(
-        http_utils, "validate_url_not_internal", lambda url: ["93.184.216.34"]
+        http_utils, "validate_url_not_internal", fake_validate_url_not_internal
     )
     monkeypatch.setattr(http_utils.httpx, "AsyncClient", FakeAsyncClient)
 
