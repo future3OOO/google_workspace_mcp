@@ -690,6 +690,105 @@ async def test_update_gmail_draft_preserves_empty_to_and_from_name():
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_omitted_from_name_when_other_fields_are_explicit():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message["In-Reply-To"] = "<msg1@example.com>"
+    existing_message["References"] = "<root@example.com> <msg1@example.com>"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "thread123",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+    mock_service.users.return_value.drafts.return_value.get.reset_mock()
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        cc="",
+        bcc="",
+        from_email="alias@example.com",
+        thread_id="thread123",
+        in_reply_to="<msg1@example.com>",
+        references="<root@example.com> <msg1@example.com>",
+        attachments=[],
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    assert mock_service.users.return_value.drafts.return_value.get.call_count == 1
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert parsed["From"] == "Existing Sender <alias@example.com>"
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_inline_related_parts_when_attachments_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    existing_message.get_body(preferencelist=("html",)).add_related(
+        b"PNGDATA",
+        maintype="image",
+        subtype="png",
+        cid="<logo>",
+        filename="logo.png",
+        disposition="inline",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body='<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
+        body_format="html",
+        include_signature=False,
+    )
+
+    assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    preserved_parts = [
+        part for part in parsed.walk() if part.get("Content-ID") == "<logo>"
+    ]
+
+    assert len(preserved_parts) == 1
+    assert preserved_parts[0].get_filename() == "logo.png"
+    assert preserved_parts[0].get_content_disposition() == "inline"
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_rejects_blank_draft_id():
     mock_service = Mock()
 

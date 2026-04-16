@@ -739,6 +739,39 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
     return context.get("message_ids", [])
 
 
+def _extract_preserved_attachments(
+    parsed_message: EmailMessage,
+) -> List[dict[str, Any]]:
+    """Extract attachment-like MIME parts that should survive draft updates."""
+    preserved_attachments: List[dict[str, Any]] = []
+
+    for part in parsed_message.walk():
+        if part.is_multipart():
+            continue
+
+        content = part.get_payload(decode=True)
+        if content is None:
+            continue
+
+        disposition = part.get_content_disposition()
+        content_id = part.get("Content-ID")
+        filename = part.get_filename()
+        if not (filename or disposition in {"attachment", "inline"} or content_id):
+            continue
+
+        preserved_attachments.append(
+            {
+                "filename": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+                "mime_type": part.get_content_type() or "application/octet-stream",
+                "disposition": disposition,
+                "content_id": content_id,
+            }
+        )
+
+    return preserved_attachments
+
+
 def _prepare_gmail_message(
     subject: str,
     body: str,
@@ -825,11 +858,15 @@ def _prepare_gmail_message(
     else:
         message.set_content(body)
 
+    html_part = message.get_body(preferencelist=("html",)) if normalized_format == "html" else None
+
     for attachment in attachments or []:
         file_path = attachment.get("path")
         filename = attachment.get("filename")
         content_base64 = attachment.get("content")
         mime_type = attachment.get("mime_type")
+        disposition = attachment.get("disposition")
+        content_id = attachment.get("content_id")
 
         try:
             if file_path:
@@ -849,7 +886,7 @@ def _prepare_gmail_message(
                     if not mime_type:
                         mime_type = "application/octet-stream"
             elif content_base64:
-                if not filename:
+                if not filename and not (content_id or disposition == "inline"):
                     logger.warning("Skipping attachment: missing filename")
                     continue
 
@@ -860,26 +897,45 @@ def _prepare_gmail_message(
                 logger.warning("Skipping attachment: missing both path and content")
                 continue
 
-            safe_filename = (
-                (filename or "attachment")
-                .replace("\r", "")
-                .replace("\n", "")
-                .replace("\x00", "")
-            ) or "attachment"
+            safe_filename = None
+            if filename:
+                safe_filename = (
+                    filename.replace("\r", "")
+                    .replace("\n", "")
+                    .replace("\x00", "")
+                ) or None
 
             main_type, sub_type = (
                 mime_type.split("/", 1)
                 if mime_type and "/" in mime_type
                 else ("application", "octet-stream")
             )
-            message.add_attachment(
-                file_data,
-                maintype=main_type,
-                subtype=sub_type,
-                filename=safe_filename,
-            )
+            attachment_kwargs = {
+                "maintype": main_type,
+                "subtype": sub_type,
+            }
+            if safe_filename is not None:
+                attachment_kwargs["filename"] = safe_filename
+            if content_id:
+                attachment_kwargs["cid"] = content_id
+            if disposition:
+                attachment_kwargs["disposition"] = disposition
+
+            if html_part is not None and (content_id or disposition == "inline"):
+                html_part.add_related(
+                    file_data,
+                    maintype=main_type,
+                    subtype=sub_type,
+                    cid=content_id,
+                    filename=safe_filename,
+                    disposition=disposition or "inline",
+                )
+            else:
+                message.add_attachment(file_data, **attachment_kwargs)
             attached_count += 1
-            logger.info(f"Attached file: {safe_filename} ({len(file_data)} bytes)")
+            logger.info(
+                f"Attached file: {safe_filename or content_id or file_path or 'attachment'} ({len(file_data)} bytes)"
+            )
         except (binascii.Error, ValueError) as e:
             logger.error(f"Failed to decode attachment {filename or file_path}: {e}")
             attachment_errors.append(_format_attachment_error(file_path, filename, e))
@@ -2127,7 +2183,8 @@ async def update_gmail_draft(
 
     preserve_from_name = from_name is None
     if (
-        to is None
+        preserve_from_name
+        or to is None
         or cc is None
         or bcc is None
         or from_email is None
@@ -2168,15 +2225,7 @@ async def update_gmail_draft(
             existing_headers["References"] if references is None else references
         )
         if attachments is None:
-            attachments = [
-                {
-                    "filename": part.get_filename() or "attachment",
-                    "content": base64.b64encode(content).decode("ascii"),
-                    "mime_type": part.get_content_type() or "application/octet-stream",
-                }
-                for part in parsed_message.iter_attachments()
-                if (content := part.get_payload(decode=True)) is not None
-            ]
+            attachments = _extract_preserved_attachments(parsed_message)
 
     (
         draft_body,
