@@ -1,7 +1,11 @@
+import inspect
+
 from auth.scopes import GMAIL_COMPOSE_SCOPE
 from core.server import server
 from core.tool_registry import get_tool_components
+from pydantic import TypeAdapter
 import gmail.gmail_tools  # noqa: F401
+from gmail.gmail_tools import update_gmail_draft
 
 
 def test_modify_gmail_message_labels_optional_arrays_publish_array_type():
@@ -52,3 +56,34 @@ def test_gmail_draft_lifecycle_tools_use_compose_scope_not_send_scope():
         "delete_gmail_draft",
     ):
         assert components[tool_name].fn._required_google_scopes == [GMAIL_COMPOSE_SCOPE]
+
+
+def test_update_gmail_draft_attachments_accept_json_encoded_array():
+    fn = (
+        update_gmail_draft.fn
+        if hasattr(update_gmail_draft, "fn")
+        else update_gmail_draft
+    )
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    annotation = inspect.signature(fn).parameters["attachments"].annotation
+    adapter = TypeAdapter(annotation)
+
+    assert adapter.validate_python(
+        '[{"filename": "doc.txt", "content": "aGVsbG8=", "mime_type": "text/plain"}]'
+    ) == [{"filename": "doc.txt", "content": "aGVsbG8=", "mime_type": "text/plain"}]
+
+
+def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
+    components = get_tool_components(server)
+    properties = components["update_gmail_draft"].parameters["properties"]
+
+    for field_name in ("to", "cc", "bcc"):
+        description = properties[field_name]["description"]
+        assert "Omit to preserve" in description
+        assert "empty string to clear" in description
+
+    attachments_description = properties["attachments"]["description"]
+    assert "Omit to preserve existing attachments" in attachments_description
+    assert "empty list to clear" in attachments_description

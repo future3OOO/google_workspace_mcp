@@ -14,9 +14,11 @@ import mimetypes
 from html.parser import HTMLParser
 from typing import Annotated, Optional, List, Dict, Literal, Any
 
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from email.policy import SMTP
-from email.utils import formataddr
+from email.utils import formataddr, parseaddr
 
 from pydantic import Field
 from googleapiclient.errors import HttpError
@@ -749,7 +751,7 @@ def _prepare_gmail_message(
     body_format: Literal["plain", "html"] = "plain",
     from_email: Optional[str] = None,
     from_name: Optional[str] = None,
-    attachments: Optional[List[Dict[str, str]]] = None,
+    attachments: Optional[List[dict[str, Any]]] = None,
 ) -> tuple[str, Optional[str], int, List[str]]:
     """
     Prepare a Gmail message with threading and attachment support.
@@ -891,6 +893,76 @@ def _prepare_gmail_message(
     raw_message = base64.urlsafe_b64encode(message.as_bytes(policy=SMTP)).decode()
 
     return raw_message, thread_id, attached_count, attachment_errors
+
+
+def _parse_raw_gmail_message(raw_message: str) -> Optional[EmailMessage]:
+    """Parse a Gmail raw MIME payload into an EmailMessage."""
+    if not raw_message:
+        return None
+
+    padded_raw = raw_message + "=" * (-len(raw_message) % 4)
+    try:
+        raw_bytes = base64.urlsafe_b64decode(padded_raw)
+    except (binascii.Error, ValueError) as exc:
+        logger.warning(f"Unable to decode existing draft raw MIME: {exc}")
+        return None
+
+    try:
+        return BytesParser(policy=policy.default).parsebytes(raw_bytes)
+    except Exception as exc:
+        logger.warning(f"Unable to parse existing draft raw MIME: {exc}")
+        return None
+
+
+def _email_header(message: EmailMessage, header_name: str) -> Optional[str]:
+    """Return a header as a plain string when present."""
+    value = message.get(header_name)
+    return str(value) if value else None
+
+
+def _extract_mime_attachments(message: EmailMessage) -> List[dict[str, Any]]:
+    """Convert MIME attachments into the draft attachment input format."""
+    attachments: List[dict[str, Any]] = []
+    for part in message.iter_attachments():
+        content = part.get_payload(decode=True)
+        if content is None:
+            continue
+
+        attachments.append(
+            {
+                "filename": part.get_filename() or "attachment",
+                "content": base64.b64encode(content).decode("ascii"),
+                "mime_type": part.get_content_type() or "application/octet-stream",
+            }
+        )
+    return attachments
+
+
+async def _fetch_existing_draft_fields(service, draft_id: str) -> dict[str, Any]:
+    """Fetch an existing draft so update calls can preserve omitted fields."""
+    existing_draft = await asyncio.to_thread(
+        service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
+    )
+    message_data = existing_draft.get("message", {})
+    parsed_message = _parse_raw_gmail_message(message_data.get("raw", ""))
+    if parsed_message is None:
+        raise UserInputError(
+            "Existing draft content could not be read. Provide all replacement fields "
+            "explicitly and use empty values only for fields that should be cleared."
+        )
+
+    from_name, from_email = parseaddr(_email_header(parsed_message, "From") or "")
+    return {
+        "to": _email_header(parsed_message, "To"),
+        "cc": _email_header(parsed_message, "Cc"),
+        "bcc": _email_header(parsed_message, "Bcc"),
+        "from_name": from_name or None,
+        "from_email": from_email or _email_header(parsed_message, "From"),
+        "thread_id": message_data.get("threadId"),
+        "in_reply_to": _email_header(parsed_message, "In-Reply-To"),
+        "references": _email_header(parsed_message, "References"),
+        "attachments": _extract_mime_attachments(parsed_message),
+    }
 
 
 def _generate_gmail_web_url(item_id: str, account_index: int = 0) -> str:
@@ -1882,7 +1954,11 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
-    draft_body, attached_count, requested_attachment_count = await _build_draft_request_body(
+    (
+        draft_body,
+        attached_count,
+        requested_attachment_count,
+    ) = await _build_draft_request_body(
         service=service,
         user_google_email=user_google_email,
         subject=subject,
@@ -1925,11 +2001,14 @@ async def _build_draft_request_body(
     thread_id: Optional[str],
     in_reply_to: Optional[str],
     references: Optional[str],
-    attachments: Optional[List[Dict[str, str]]],
+    attachments: Optional[List[dict[str, Any]]],
     include_signature: bool,
     quote_original: bool,
 ) -> tuple[dict, int, int]:
     """Build the Gmail draft request body shared by create and update."""
+    if quote_original and not thread_id:
+        raise UserInputError("quote_original requires thread_id.")
+
     sender_email = from_email or user_google_email
     draft_body = body
     signature_html = ""
@@ -1939,7 +2018,13 @@ async def _build_draft_request_body(
         )
 
     reply_context = None
-    if thread_id and (quote_original or not in_reply_to or not references or not to):
+    if thread_id and (
+        quote_original
+        or not in_reply_to
+        or not references
+        or not to
+        or not subject.strip()
+    ):
         reply_context = await _fetch_thread_reply_context(
             service,
             thread_id,
@@ -2027,13 +2112,30 @@ async def update_gmail_draft(
     ] = "plain",
     to: Annotated[
         Optional[str],
-        Field(description="Optional recipient email address."),
+        Field(
+            description=(
+                "Optional replacement recipient email address. Omit to preserve "
+                "existing recipients; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     cc: Annotated[
-        Optional[str], Field(description="Optional CC email address.")
+        Optional[str],
+        Field(
+            description=(
+                "Optional replacement CC email address. Omit to preserve existing "
+                "CC recipients; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     bcc: Annotated[
-        Optional[str], Field(description="Optional BCC email address.")
+        Optional[str],
+        Field(
+            description=(
+                "Optional replacement BCC email address. Omit to preserve existing "
+                "BCC recipients; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     from_name: Annotated[
         Optional[str],
@@ -2049,7 +2151,9 @@ async def update_gmail_draft(
     ] = None,
     thread_id: Annotated[
         Optional[str],
-        Field(description="Optional Gmail thread ID to keep the draft associated with."),
+        Field(
+            description="Optional Gmail thread ID to keep the draft associated with."
+        ),
     ] = None,
     in_reply_to: Annotated[
         Optional[str],
@@ -2060,9 +2164,13 @@ async def update_gmail_draft(
         Field(description="Optional chain of Message-IDs for proper threading."),
     ] = None,
     attachments: Annotated[
-        Optional[List[Dict[str, str]]],
+        Optional[DictList],
         Field(
-            description="Optional replacement attachments. Each can have: 'path', OR 'content' + 'filename'. Optional 'mime_type'.",
+            description=(
+                "Optional replacement attachments. Omit to preserve existing attachments; "
+                "pass an empty list to clear. Each can have: 'path', OR 'content' + "
+                "'filename'. Optional 'mime_type'."
+            ),
         ),
     ] = None,
     include_signature: Annotated[
@@ -2078,15 +2186,42 @@ async def update_gmail_draft(
         ),
     ] = False,
 ) -> str:
-    """Replaces the content of an existing Gmail draft."""
+    """Updates an existing Gmail draft while preserving omitted draft fields."""
     logger.info(
         f"[update_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
     )
 
-    if not draft_id.strip():
+    draft_id = draft_id.strip()
+    if not draft_id:
         raise UserInputError("draft_id is required.")
 
-    draft_body, attached_count, requested_attachment_count = await _build_draft_request_body(
+    preserve_from_name = from_email is None and from_name is None
+    if (
+        to is None
+        or cc is None
+        or bcc is None
+        or from_email is None
+        or thread_id is None
+        or in_reply_to is None
+        or references is None
+        or attachments is None
+    ):
+        existing = await _fetch_existing_draft_fields(service, draft_id)
+        to = existing["to"] if to is None else to
+        cc = existing["cc"] if cc is None else cc
+        bcc = existing["bcc"] if bcc is None else bcc
+        from_email = existing["from_email"] if from_email is None else from_email
+        from_name = existing["from_name"] if preserve_from_name else from_name
+        thread_id = existing["thread_id"] if thread_id is None else thread_id
+        in_reply_to = existing["in_reply_to"] if in_reply_to is None else in_reply_to
+        references = existing["references"] if references is None else references
+        attachments = existing["attachments"] if attachments is None else attachments
+
+    (
+        draft_body,
+        attached_count,
+        requested_attachment_count,
+    ) = await _build_draft_request_body(
         service=service,
         user_google_email=user_google_email,
         subject=subject,
@@ -2131,7 +2266,8 @@ async def delete_gmail_draft(
         f"[delete_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
     )
 
-    if not draft_id.strip():
+    draft_id = draft_id.strip()
+    if not draft_id:
         raise UserInputError("draft_id is required.")
 
     await asyncio.to_thread(
