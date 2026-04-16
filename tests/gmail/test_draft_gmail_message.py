@@ -758,50 +758,7 @@ async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty
 
 
 @pytest.mark.asyncio
-async def test_update_gmail_draft_preserves_empty_to_and_from_name():
-    mock_service = Mock()
-    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
-    existing_message = EmailMessage(policy=SMTP)
-    existing_message["Subject"] = "Old subject"
-    existing_message["From"] = "Existing Sender <alias@example.com>"
-    existing_message.set_content("Old body")
-    mock_service.users().drafts().get().execute.return_value = {
-        "message": {
-            "threadId": "thread123",
-            "raw": _encode_raw_message(existing_message),
-        }
-    }
-    mock_service.users().threads().get().execute.return_value = {
-        "messages": [
-            _thread_message(
-                "<msg1@example.com>",
-                from_value="Alice Example <alice@example.com>",
-                reply_to="reply@example.com",
-            )
-        ]
-    }
-
-    await _unwrap(update_gmail_draft)(
-        service=mock_service,
-        user_google_email="user@example.com",
-        draft_id="draft123",
-        from_email="new-alias@example.com",
-        subject="Updated subject",
-        body="Updated body",
-        include_signature=False,
-    )
-
-    update_kwargs = (
-        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
-    )
-    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
-
-    assert parsed["To"] is None
-    assert parsed["From"] == "Existing Sender <new-alias@example.com>"
-
-
-@pytest.mark.asyncio
-async def test_update_gmail_draft_preserves_omitted_from_name_when_other_fields_are_explicit():
+async def test_update_gmail_draft_preserves_omitted_from_name_with_explicit_fields_and_clear_to():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
     existing_message = EmailMessage(policy=SMTP)
@@ -823,10 +780,10 @@ async def test_update_gmail_draft_preserves_omitted_from_name_when_other_fields_
         service=mock_service,
         user_google_email="user@example.com",
         draft_id="draft123",
-        to="recipient@example.com",
+        to="",
         cc="",
         bcc="",
-        from_email="alias@example.com",
+        from_email="new-alias@example.com",
         thread_id="thread123",
         in_reply_to="<msg1@example.com>",
         references="<root@example.com> <msg1@example.com>",
@@ -843,7 +800,8 @@ async def test_update_gmail_draft_preserves_omitted_from_name_when_other_fields_
     )
     parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
 
-    assert parsed["From"] == "Existing Sender <alias@example.com>"
+    assert parsed["To"] is None
+    assert parsed["From"] == "Existing Sender <new-alias@example.com>"
 
 
 @pytest.mark.asyncio
@@ -900,7 +858,13 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
 
 
 @pytest.mark.asyncio
-async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitted():
+@pytest.mark.parametrize(
+    ("filename", "expected_filename"),
+    [("forwarded.eml", "forwarded.eml"), (None, None)],
+)
+async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitted(
+    filename, expected_filename
+):
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
     existing_message = EmailMessage(policy=SMTP)
@@ -914,58 +878,14 @@ async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitt
     forwarded_message["From"] = "sender@example.com"
     forwarded_message["To"] = "recipient@example.com"
     forwarded_message.set_content("Forwarded body")
-    existing_message.add_attachment(forwarded_message, filename="forwarded.eml")
-
-    mock_service.users().drafts().get().execute.return_value = {
-        "message": {
-            "raw": _encode_raw_message(existing_message),
-        }
-    }
-
-    result = await _unwrap(update_gmail_draft)(
-        service=mock_service,
-        user_google_email="user@example.com",
-        draft_id="draft123",
-        to="recipient@example.com",
-        subject="Updated subject",
-        body="Updated body",
-        include_signature=False,
-    )
-
-    assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
-
-    update_kwargs = (
-        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
-    )
-    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
-    preserved_parts = [
-        part for part in parsed.walk() if part.get_filename() == "forwarded.eml"
-    ]
-
-    assert len(preserved_parts) == 1
-    assert preserved_parts[0].get_content_type() == "message/rfc822"
-
-
-@pytest.mark.asyncio
-async def test_update_gmail_draft_preserves_unnamed_message_rfc822_attachment_when_omitted():
-    mock_service = Mock()
-    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
-    existing_message = EmailMessage(policy=SMTP)
-    existing_message["Subject"] = "Old subject"
-    existing_message["To"] = "recipient@example.com"
-    existing_message["From"] = "Existing Sender <alias@example.com>"
-    existing_message.set_content("Old body")
-
-    forwarded_message = EmailMessage(policy=SMTP)
-    forwarded_message["Subject"] = "Forwarded subject"
-    forwarded_message["From"] = "sender@example.com"
-    forwarded_message["To"] = "recipient@example.com"
-    forwarded_message.set_content("Forwarded body")
-    existing_message.add_attachment(
-        forwarded_message.as_bytes(policy=SMTP),
-        maintype="message",
-        subtype="rfc822",
-    )
+    if filename is None:
+        existing_message.add_attachment(
+            forwarded_message.as_bytes(policy=SMTP),
+            maintype="message",
+            subtype="rfc822",
+        )
+    else:
+        existing_message.add_attachment(forwarded_message, filename=filename)
 
     mock_service.users().drafts().get().execute.return_value = {
         "message": {
@@ -993,11 +913,15 @@ async def test_update_gmail_draft_preserves_unnamed_message_rfc822_attachment_wh
         part
         for part in parsed.walk()
         if part.get_content_type() == "message/rfc822"
-        and part.get_content_disposition() == "attachment"
+        and (
+            part.get_filename() == expected_filename
+            if expected_filename is not None
+            else part.get_content_disposition() == "attachment"
+        )
     ]
 
     assert len(preserved_parts) == 1
-    assert preserved_parts[0].get_filename() is None
+    assert preserved_parts[0].get_filename() == expected_filename
 
 
 @pytest.mark.asyncio
