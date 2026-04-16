@@ -895,58 +895,6 @@ def _prepare_gmail_message(
     return raw_message, thread_id, attached_count, attachment_errors
 
 
-async def _fetch_existing_draft_defaults(service, draft_id: str) -> dict[str, Any]:
-    """Return practical defaults to preserve omitted draft update fields."""
-    existing_draft = await asyncio.to_thread(
-        service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
-    )
-    message_data = existing_draft.get("message", {})
-    raw_message = message_data.get("raw", "")
-    if not raw_message:
-        raise UserInputError(
-            "Existing draft content could not be read. Provide omitted fields explicitly."
-        )
-
-    try:
-        raw_bytes = base64.urlsafe_b64decode(
-            raw_message + "=" * (-len(raw_message) % 4)
-        )
-    except (binascii.Error, ValueError) as exc:
-        raise UserInputError("Existing draft content could not be decoded.") from exc
-
-    parsed_message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-    headers = {}
-    for header_name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References"):
-        header_value = parsed_message.get(header_name)
-        headers[header_name] = str(header_value) if header_value else None
-
-    attachments: List[dict[str, Any]] = []
-    for part in parsed_message.iter_attachments():
-        content = part.get_payload(decode=True)
-        if content is None:
-            continue
-        attachments.append(
-            {
-                "filename": part.get_filename() or "attachment",
-                "content": base64.b64encode(content).decode("ascii"),
-                "mime_type": part.get_content_type() or "application/octet-stream",
-            }
-        )
-
-    from_name, from_email = parseaddr(headers["From"] or "")
-    return {
-        "to": headers["To"],
-        "cc": headers["Cc"],
-        "bcc": headers["Bcc"],
-        "from_name": from_name or None,
-        "from_email": from_email or headers["From"],
-        "thread_id": message_data.get("threadId"),
-        "in_reply_to": headers["In-Reply-To"],
-        "references": headers["References"],
-        "attachments": attachments,
-    }
-
-
 def _generate_gmail_web_url(item_id: str, account_index: int = 0) -> str:
     """
     Generate Gmail web interface URL for a message or thread ID.
@@ -2188,16 +2136,46 @@ async def update_gmail_draft(
         or references is None
         or attachments is None
     ):
-        existing = await _fetch_existing_draft_defaults(service, draft_id)
-        to = existing["to"] if to is None else to
-        cc = existing["cc"] if cc is None else cc
-        bcc = existing["bcc"] if bcc is None else bcc
-        from_email = existing["from_email"] if from_email is None else from_email
-        from_name = existing["from_name"] if preserve_from_name else from_name
-        thread_id = existing["thread_id"] if thread_id is None else thread_id
-        in_reply_to = existing["in_reply_to"] if in_reply_to is None else in_reply_to
-        references = existing["references"] if references is None else references
-        attachments = existing["attachments"] if attachments is None else attachments
+        existing_draft = await asyncio.to_thread(
+            service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
+        )
+        message_data = existing_draft.get("message", {})
+        raw_message = message_data["raw"]
+        parsed_message = BytesParser(policy=policy.default).parsebytes(
+            base64.urlsafe_b64decode(raw_message + "=" * (-len(raw_message) % 4))
+        )
+        existing_headers = {
+            name: str(value) if (value := parsed_message.get(name)) else None
+            for name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References")
+        }
+        existing_from_name, existing_from_email = parseaddr(
+            existing_headers["From"] or ""
+        )
+
+        to = existing_headers["To"] if to is None else to
+        cc = existing_headers["Cc"] if cc is None else cc
+        bcc = existing_headers["Bcc"] if bcc is None else bcc
+        if from_email is None:
+            from_email = existing_from_email or existing_headers["From"]
+        if preserve_from_name:
+            from_name = existing_from_name or None
+        thread_id = message_data.get("threadId") if thread_id is None else thread_id
+        in_reply_to = (
+            existing_headers["In-Reply-To"] if in_reply_to is None else in_reply_to
+        )
+        references = (
+            existing_headers["References"] if references is None else references
+        )
+        if attachments is None:
+            attachments = [
+                {
+                    "filename": part.get_filename() or "attachment",
+                    "content": base64.b64encode(content).decode("ascii"),
+                    "mime_type": part.get_content_type() or "application/octet-stream",
+                }
+                for part in parsed_message.iter_attachments()
+                if (content := part.get_payload(decode=True)) is not None
+            ]
 
     (
         draft_body,

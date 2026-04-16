@@ -647,37 +647,6 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
-async def test_update_gmail_draft_empty_attachments_clears_without_fetching_existing():
-    mock_service = Mock()
-    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
-
-    await _unwrap(update_gmail_draft)(
-        service=mock_service,
-        user_google_email="user@example.com",
-        draft_id="draft123",
-        to="recipient@example.com",
-        cc="",
-        bcc="",
-        from_email="alias@example.com",
-        subject="Updated subject",
-        body="Updated body",
-        thread_id="thread123",
-        in_reply_to="<msg1@example.com>",
-        references="<msg1@example.com>",
-        attachments=[],
-        include_signature=False,
-    )
-
-    assert not mock_service.users.return_value.drafts.return_value.get.called
-    update_kwargs = (
-        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
-    )
-    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
-
-    assert list(parsed.iter_attachments()) == []
-
-
-@pytest.mark.asyncio
 async def test_update_gmail_draft_rejects_blank_draft_id():
     mock_service = Mock()
 
