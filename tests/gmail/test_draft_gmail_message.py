@@ -789,6 +789,71 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message.set_content("Old body")
+
+    forwarded_message = EmailMessage(policy=SMTP)
+    forwarded_message["Subject"] = "Forwarded subject"
+    forwarded_message["From"] = "sender@example.com"
+    forwarded_message["To"] = "recipient@example.com"
+    forwarded_message.set_content("Forwarded body")
+    existing_message.add_attachment(forwarded_message, filename="forwarded.eml")
+
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    preserved_parts = [
+        part for part in parsed.walk() if part.get_filename() == "forwarded.eml"
+    ]
+
+    assert len(preserved_parts) == 1
+    assert preserved_parts[0].get_content_type() == "message/rfc822"
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_rejects_missing_raw_message_content():
+    mock_service = Mock()
+    mock_service.users().drafts().get().execute.return_value = {"message": {}}
+
+    with pytest.raises(UserInputError, match="Failed to retrieve raw message content"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            subject="Updated subject",
+            body="Updated body",
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.update.called
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_rejects_blank_draft_id():
     mock_service = Mock()
 

@@ -746,16 +746,29 @@ def _extract_preserved_attachments(
     preserved_attachments: List[dict[str, Any]] = []
 
     for part in parsed_message.walk():
-        if part.is_multipart():
-            continue
-
-        content = part.get_payload(decode=True)
-        if content is None:
-            continue
-
         disposition = part.get_content_disposition()
         content_id = part.get("Content-ID")
         filename = part.get_filename()
+        if part.is_multipart() and not (
+            filename or disposition in {"attachment", "inline"} or content_id
+        ):
+            continue
+
+        if part.get_content_type() == "message/rfc822":
+            content_message = part.get_content()
+            content = (
+                content_message.as_bytes(policy=SMTP)
+                if hasattr(content_message, "as_bytes")
+                else None
+            )
+        else:
+            content = part.get_payload(decode=True)
+            if content is None and part.is_multipart():
+                content = part.as_bytes(policy=SMTP)
+
+        if content is None:
+            continue
+
         if not (filename or disposition in {"attachment", "inline"} or content_id):
             continue
 
@@ -2132,22 +2145,38 @@ async def update_gmail_draft(
     from_email: Annotated[
         Optional[str],
         Field(
-            description="Optional 'Send As' alias email address. Must be configured in Gmail settings.",
+            description=(
+                "Optional 'Send As' alias email address. Omit to preserve the existing alias; "
+                "pass an empty string to clear. Must be configured in Gmail settings."
+            ),
         ),
     ] = None,
     thread_id: Annotated[
         Optional[str],
         Field(
-            description="Optional Gmail thread ID to keep the draft associated with."
+            description=(
+                "Optional Gmail thread ID to keep the draft associated with. Omit to preserve "
+                "the existing thread association; pass an empty string to clear."
+            )
         ),
     ] = None,
     in_reply_to: Annotated[
         Optional[str],
-        Field(description="Optional RFC Message-ID of the message being replied to."),
+        Field(
+            description=(
+                "Optional RFC Message-ID of the message being replied to. Omit to preserve the "
+                "existing value; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     references: Annotated[
         Optional[str],
-        Field(description="Optional chain of Message-IDs for proper threading."),
+        Field(
+            description=(
+                "Optional chain of Message-IDs for proper threading. Omit to preserve the "
+                "existing value; pass an empty string to clear."
+            ),
+        ),
     ] = None,
     attachments: Annotated[
         Optional[DictList],
@@ -2197,7 +2226,12 @@ async def update_gmail_draft(
             service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
         )
         message_data = existing_draft.get("message", {})
-        raw_message = message_data["raw"]
+        raw_message = message_data.get("raw")
+        if not raw_message:
+            raise UserInputError(
+                f"Failed to retrieve raw message content for draft '{draft_id}'. "
+                "The draft may have been deleted or the API returned an unexpected response."
+            )
         parsed_message = BytesParser(policy=policy.default).parsebytes(
             base64.urlsafe_b64decode(raw_message + "=" * (-len(raw_message) % 4))
         )
