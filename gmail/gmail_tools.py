@@ -903,7 +903,11 @@ def _prepare_gmail_message(
                     if not mime_type:
                         mime_type = "application/octet-stream"
             elif content_base64:
-                if not filename and not (content_id or disposition == "inline"):
+                if not filename and not (
+                    content_id
+                    or disposition in {"inline", "attachment"}
+                    or mime_type == "message/rfc822"
+                ):
                     logger.warning("Skipping attachment: missing filename")
                     continue
 
@@ -1955,6 +1959,14 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
+    if thread_id:
+        if to == "":
+            to = None
+        if in_reply_to == "":
+            in_reply_to = None
+        if references == "":
+            references = None
+
     (
         draft_body,
         attached_count,
@@ -2235,9 +2247,20 @@ async def update_gmail_draft(
                 f"Failed to retrieve raw message content for draft '{draft_id}'. "
                 "The draft may have been deleted or the API returned an unexpected response."
             )
-        parsed_message = BytesParser(policy=policy.default).parsebytes(
-            base64.urlsafe_b64decode(raw_message + "=" * (-len(raw_message) % 4))
-        )
+        try:
+            padded_raw_message = raw_message + "=" * (-len(raw_message) % 4)
+            parsed_message = BytesParser(policy=policy.default).parsebytes(
+                base64.b64decode(
+                    padded_raw_message,
+                    altchars=b"-_",
+                    validate=True,
+                )
+            )
+        except (binascii.Error, ValueError, TypeError) as exc:
+            raise UserInputError(
+                f"Failed to parse draft '{draft_id}' raw MIME content. "
+                "The draft response appears malformed."
+            ) from exc
         existing_headers = {
             name: str(value) if (value := parsed_message.get(name)) else None
             for name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References")
