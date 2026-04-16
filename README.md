@@ -471,7 +471,7 @@ Read-only mode provides secure, restricted access by:
 uv run main.py --permissions gmail:organize drive:readonly
 
 # Combine permissions with tier filtering
-uv run main.py --permissions gmail:send drive:full --tool-tier core
+uv run main.py --permissions gmail:drafts drive:full --tool-tier extended
 ```
 Granular permissions mode provides service-by-service scope control:
 - Format: `service:level` (one entry per service)
@@ -748,6 +748,8 @@ cp .env.oauth21 .env
 | <sub>`manage_gmail_label`</sub> | <sub>Extended</sub> | <sub>Create/update/delete labels</sub> |
 | <sub>`manage_gmail_filter`</sub> | <sub>Extended</sub> | <sub>Create or delete Gmail filters</sub> |
 | <sub>`draft_gmail_message`</sub> | <sub>Extended</sub> | <sub>Create drafts</sub> |
+| <sub>`update_gmail_draft`</sub> | <sub>Extended</sub> | <sub>Replace draft content</sub> |
+| <sub>`delete_gmail_draft`</sub> | <sub>Extended</sub> | <sub>Delete drafts</sub> |
 | <sub>`get_gmail_threads_content_batch`</sub> | <sub>Complete</sub> | <sub>Batch retrieve thread content</sub> |
 | <sub>`batch_modify_gmail_message_labels`</sub> | <sub>Complete</sub> | <sub>Batch modify labels</sub> |
 | <sub>`start_google_auth`</sub> | <sub>Complete</sub> | <sub>Legacy OAuth 2.0 auth (disabled when OAuth 2.1 is enabled)</sub> |

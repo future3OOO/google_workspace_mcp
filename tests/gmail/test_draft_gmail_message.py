@@ -10,7 +10,11 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from core.utils import UserInputError
-from gmail.gmail_tools import draft_gmail_message
+from gmail.gmail_tools import (
+    delete_gmail_draft,
+    draft_gmail_message,
+    update_gmail_draft,
+)
 
 
 def _unwrap(tool):
@@ -522,3 +526,88 @@ async def test_draft_gmail_message_gracefully_degrades_when_thread_has_no_messag
 
     assert "In-Reply-To:" not in raw_text
     assert "References:" not in raw_text
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_replaces_existing_draft_content():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    mock_service.users().threads().get().execute.return_value = _thread_response(
+        "<msg1@example.com>"
+    )
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="Updated body",
+        thread_id="thread123",
+        include_signature=False,
+    )
+
+    assert "Draft updated! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    assert update_kwargs["userId"] == "me"
+    assert update_kwargs["id"] == "draft123"
+    assert update_kwargs["body"]["message"]["threadId"] == "thread123"
+
+    raw_message = update_kwargs["body"]["message"]["raw"]
+    parsed = _parse_raw_message(raw_message)
+    assert parsed["Subject"] == "Re: Updated subject"
+    assert parsed["To"] == "recipient@example.com"
+    assert parsed.get_content().strip() == "Updated body"
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_rejects_blank_draft_id():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="draft_id is required"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id=" ",
+            to="recipient@example.com",
+            subject="Updated subject",
+            body="Updated body",
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.update.called
+
+
+@pytest.mark.asyncio
+async def test_delete_gmail_draft_deletes_existing_draft():
+    mock_service = Mock()
+
+    result = await _unwrap(delete_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+    )
+
+    assert result == "Draft deleted! Draft ID: draft123"
+
+    delete_kwargs = (
+        mock_service.users.return_value.drafts.return_value.delete.call_args.kwargs
+    )
+    assert delete_kwargs == {"userId": "me", "id": "draft123"}
+
+
+@pytest.mark.asyncio
+async def test_delete_gmail_draft_rejects_blank_draft_id():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="draft_id is required"):
+        await _unwrap(delete_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id=" ",
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.delete.called
