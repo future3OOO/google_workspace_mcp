@@ -895,39 +895,36 @@ def _prepare_gmail_message(
     return raw_message, thread_id, attached_count, attachment_errors
 
 
-def _parse_raw_gmail_message(raw_message: str) -> Optional[EmailMessage]:
-    """Parse a Gmail raw MIME payload into an EmailMessage."""
+async def _fetch_existing_draft_defaults(service, draft_id: str) -> dict[str, Any]:
+    """Return practical defaults to preserve omitted draft update fields."""
+    existing_draft = await asyncio.to_thread(
+        service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
+    )
+    message_data = existing_draft.get("message", {})
+    raw_message = message_data.get("raw", "")
     if not raw_message:
-        return None
+        raise UserInputError(
+            "Existing draft content could not be read. Provide omitted fields explicitly."
+        )
 
-    padded_raw = raw_message + "=" * (-len(raw_message) % 4)
     try:
-        raw_bytes = base64.urlsafe_b64decode(padded_raw)
+        raw_bytes = base64.urlsafe_b64decode(
+            raw_message + "=" * (-len(raw_message) % 4)
+        )
     except (binascii.Error, ValueError) as exc:
-        logger.warning(f"Unable to decode existing draft raw MIME: {exc}")
-        return None
+        raise UserInputError("Existing draft content could not be decoded.") from exc
 
-    try:
-        return BytesParser(policy=policy.default).parsebytes(raw_bytes)
-    except Exception as exc:
-        logger.warning(f"Unable to parse existing draft raw MIME: {exc}")
-        return None
+    parsed_message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
+    headers = {}
+    for header_name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References"):
+        header_value = parsed_message.get(header_name)
+        headers[header_name] = str(header_value) if header_value else None
 
-
-def _email_header(message: EmailMessage, header_name: str) -> Optional[str]:
-    """Return a header as a plain string when present."""
-    value = message.get(header_name)
-    return str(value) if value else None
-
-
-def _extract_mime_attachments(message: EmailMessage) -> List[dict[str, Any]]:
-    """Convert MIME attachments into the draft attachment input format."""
     attachments: List[dict[str, Any]] = []
-    for part in message.iter_attachments():
+    for part in parsed_message.iter_attachments():
         content = part.get_payload(decode=True)
         if content is None:
             continue
-
         attachments.append(
             {
                 "filename": part.get_filename() or "attachment",
@@ -935,33 +932,18 @@ def _extract_mime_attachments(message: EmailMessage) -> List[dict[str, Any]]:
                 "mime_type": part.get_content_type() or "application/octet-stream",
             }
         )
-    return attachments
 
-
-async def _fetch_existing_draft_fields(service, draft_id: str) -> dict[str, Any]:
-    """Fetch an existing draft so update calls can preserve omitted fields."""
-    existing_draft = await asyncio.to_thread(
-        service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
-    )
-    message_data = existing_draft.get("message", {})
-    parsed_message = _parse_raw_gmail_message(message_data.get("raw", ""))
-    if parsed_message is None:
-        raise UserInputError(
-            "Existing draft content could not be read. Provide all replacement fields "
-            "explicitly and use empty values only for fields that should be cleared."
-        )
-
-    from_name, from_email = parseaddr(_email_header(parsed_message, "From") or "")
+    from_name, from_email = parseaddr(headers["From"] or "")
     return {
-        "to": _email_header(parsed_message, "To"),
-        "cc": _email_header(parsed_message, "Cc"),
-        "bcc": _email_header(parsed_message, "Bcc"),
+        "to": headers["To"],
+        "cc": headers["Cc"],
+        "bcc": headers["Bcc"],
         "from_name": from_name or None,
-        "from_email": from_email or _email_header(parsed_message, "From"),
+        "from_email": from_email or headers["From"],
         "thread_id": message_data.get("threadId"),
-        "in_reply_to": _email_header(parsed_message, "In-Reply-To"),
-        "references": _email_header(parsed_message, "References"),
-        "attachments": _extract_mime_attachments(parsed_message),
+        "in_reply_to": headers["In-Reply-To"],
+        "references": headers["References"],
+        "attachments": attachments,
     }
 
 
@@ -2206,7 +2188,7 @@ async def update_gmail_draft(
         or references is None
         or attachments is None
     ):
-        existing = await _fetch_existing_draft_fields(service, draft_id)
+        existing = await _fetch_existing_draft_defaults(service, draft_id)
         to = existing["to"] if to is None else to
         cc = existing["cc"] if cc is None else cc
         bcc = existing["bcc"] if bcc is None else bcc
