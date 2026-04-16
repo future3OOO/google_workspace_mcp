@@ -647,6 +647,55 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty_strings():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message["In-Reply-To"] = "<m2@example.com>"
+    existing_message["References"] = "<m1@example.com> <m2@example.com>"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "thread123",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message("<m1@example.com>", subject="Thread subject"),
+            _thread_message("<m2@example.com>", subject="Thread subject"),
+        ]
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        from_email="",
+        in_reply_to="",
+        references="",
+        thread_id="thread123",
+        attachments=[],
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert parsed["From"] is None
+    assert parsed["In-Reply-To"] is None
+    assert parsed["References"] is None
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_empty_to_and_from_name():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}

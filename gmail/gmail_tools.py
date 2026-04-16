@@ -871,7 +871,11 @@ def _prepare_gmail_message(
     else:
         message.set_content(body)
 
-    html_part = message.get_body(preferencelist=("html",)) if normalized_format == "html" else None
+    html_part = (
+        message.get_body(preferencelist=("html",))
+        if normalized_format == "html"
+        else None
+    )
 
     for attachment in attachments or []:
         file_path = attachment.get("path")
@@ -913,9 +917,7 @@ def _prepare_gmail_message(
             safe_filename = None
             if filename:
                 safe_filename = (
-                    filename.replace("\r", "")
-                    .replace("\n", "")
-                    .replace("\x00", "")
+                    filename.replace("\r", "").replace("\n", "").replace("\x00", "")
                 ) or None
 
             main_type, sub_type = (
@@ -2008,19 +2010,20 @@ async def _build_draft_request_body(
     if quote_original and not thread_id:
         raise UserInputError("quote_original requires thread_id.")
 
-    sender_email = from_email or user_google_email
+    sender_email = user_google_email if from_email is None else from_email
+    signature_sender_email = sender_email or user_google_email
     draft_body = body
     signature_html = ""
     if include_signature:
         signature_html = await _get_send_as_signature_html(
-            service, from_email=sender_email
+            service, from_email=signature_sender_email
         )
 
     reply_context = None
     if thread_id and (
         quote_original
-        or not in_reply_to
-        or not references
+        or in_reply_to is None
+        or references is None
         or to is None
         or not subject.strip()
     ):
@@ -2031,7 +2034,7 @@ async def _build_draft_request_body(
             include_bodies=quote_original,
         )
 
-    if thread_id and (not in_reply_to or not references):
+    if thread_id and (in_reply_to is None or references is None):
         thread_message_ids = (
             reply_context.get("message_ids", []) if reply_context else []
         )
