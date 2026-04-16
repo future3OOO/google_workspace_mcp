@@ -1952,7 +1952,7 @@ async def _build_draft_request_body(
         quote_original
         or not in_reply_to
         or not references
-        or not to
+        or to is None
         or not subject.strip()
     ):
         reply_context = await _fetch_thread_reply_context(
@@ -1971,7 +1971,7 @@ async def _build_draft_request_body(
         )
 
     target_reply = reply_context.get("target") if reply_context else None
-    if thread_id and not to and target_reply:
+    if thread_id and to is None and target_reply:
         to = target_reply.get("reply_to") or target_reply.get("from") or to
     if thread_id and not subject.strip() and target_reply:
         subject = target_reply.get("subject") or subject
@@ -2070,7 +2070,7 @@ async def update_gmail_draft(
     from_name: Annotated[
         Optional[str],
         Field(
-            description="Optional sender display name. If provided, the From header will be formatted as 'Name <email>'.",
+            description="Optional sender display name. Omit to preserve; pass an empty string to clear.",
         ),
     ] = None,
     from_email: Annotated[
@@ -2125,7 +2125,7 @@ async def update_gmail_draft(
     if not draft_id:
         raise UserInputError("draft_id is required.")
 
-    preserve_from_name = from_email is None and from_name is None
+    preserve_from_name = from_name is None
     if (
         to is None
         or cc is None
@@ -2152,7 +2152,8 @@ async def update_gmail_draft(
             existing_headers["From"] or ""
         )
 
-        to = existing_headers["To"] if to is None else to
+        if to is None:
+            to = existing_headers["To"] or ""
         cc = existing_headers["Cc"] if cc is None else cc
         bcc = existing_headers["Bcc"] if bcc is None else bcc
         if from_email is None:
