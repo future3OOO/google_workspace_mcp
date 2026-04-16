@@ -779,6 +779,7 @@ def _extract_preserved_attachments(
                 "mime_type": part.get_content_type() or "application/octet-stream",
                 "disposition": disposition,
                 "content_id": content_id,
+                "_preserved": True,
             }
         )
 
@@ -884,6 +885,7 @@ def _prepare_gmail_message(
         mime_type = attachment.get("mime_type")
         disposition = attachment.get("disposition")
         content_id = attachment.get("content_id")
+        preserved_attachment = bool(attachment.get("_preserved"))
 
         try:
             if file_path:
@@ -904,9 +906,7 @@ def _prepare_gmail_message(
                         mime_type = "application/octet-stream"
             elif content_base64:
                 if not filename and not (
-                    content_id
-                    or disposition in {"inline", "attachment"}
-                    or mime_type == "message/rfc822"
+                    content_id or disposition == "inline" or preserved_attachment
                 ):
                     logger.warning("Skipping attachment: missing filename")
                     continue

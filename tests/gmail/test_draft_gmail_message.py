@@ -563,6 +563,31 @@ async def test_draft_gmail_message_fetches_thread_when_subject_needs_fallback():
 
 
 @pytest.mark.asyncio
+async def test_draft_gmail_message_rejects_unnamed_message_rfc822_base64_attachment():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="No valid attachments were added"):
+        await _unwrap(draft_gmail_message)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            to="recipient@example.com",
+            subject="Attachment test",
+            body="Please see attached.",
+            attachments=[
+                {
+                    "content": base64.b64encode(b"Subject: Inner\r\n\r\nbody").decode(
+                        "ascii"
+                    ),
+                    "mime_type": "message/rfc822",
+                }
+            ],
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.create.called
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_treats_empty_reply_fields_as_missing_for_thread_fallback():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
