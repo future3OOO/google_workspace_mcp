@@ -241,12 +241,12 @@ async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks():
                 "sendAsEmail": "user@example.com",
                 "isPrimary": True,
                 "signature": (
-                    "<div>McKenzie Lawrence</div>"
-                    "<div>PROPERTY MANAGER / PROPERTY PARTNER</div>"
+                    "<div>Alex Example</div>"
+                    "<div>OPERATIONS LEAD / EXAMPLE CO</div>"
                     "<table>"
-                    '<tr><td><span>e.</span>&nbsp;<a href="mailto:mckenzie@propertypartner.co.nz">mckenzie@propertypartner.co.nz</a></td></tr>'
-                    "<tr><td><span>p.</span>&nbsp;<span>027 535 6132</span></td></tr>"
-                    '<tr><td><span>w.</span>&nbsp;<a href="https://propertypartner.co.nz/">propertypartner.co.nz</a></td></tr>'
+                    '<tr><td><span>e.</span>&nbsp;<a href="mailto:alex@example.test">alex@example.test</a></td></tr>'
+                    "<tr><td><span>p.</span>&nbsp;<span>+1 555 0100</span></td></tr>"
+                    '<tr><td><span>w.</span>&nbsp;<a href="https://example.test/">example.test</a></td></tr>'
                     "</table>"
                 ),
             }
@@ -271,11 +271,11 @@ async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks():
 
     assert content == (
         "Hello\n\n"
-        "McKenzie Lawrence\n"
-        "PROPERTY MANAGER / PROPERTY PARTNER\n"
-        "e. mckenzie@propertypartner.co.nz\n"
-        "p. 027 535 6132\n"
-        "w. propertypartner.co.nz"
+        "Alex Example\n"
+        "OPERATIONS LEAD / EXAMPLE CO\n"
+        "e. alex@example.test\n"
+        "p. +1 555 0100\n"
+        "w. example.test"
     )
 
 
@@ -289,9 +289,9 @@ async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks_whe
                 "sendAsEmail": "user@example.com",
                 "isPrimary": True,
                 "signature": (
-                    "<div>McKenzie Lawrence</div>"
-                    "<div>PROPERTY MANAGER / PROPERTY PARTNER</div>"
-                    '<div><span>e.</span>&nbsp;<a href="mailto:mckenzie@propertypartner.co.nz">mckenzie@propertypartner.co.nz</a></div>'
+                    "<div>Alex Example</div>"
+                    "<div>OPERATIONS LEAD / EXAMPLE CO</div>"
+                    '<div><span>e.</span>&nbsp;<a href="mailto:alex@example.test">alex@example.test</a></div>'
                 ),
             }
         ]
@@ -325,9 +325,9 @@ async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks_whe
 
     assert (
         "Thanks for the update.\n\n"
-        "McKenzie Lawrence\n"
-        "PROPERTY MANAGER / PROPERTY PARTNER\n"
-        "e. mckenzie@propertypartner.co.nz\n\n"
+        "Alex Example\n"
+        "OPERATIONS LEAD / EXAMPLE CO\n"
+        "e. alex@example.test\n\n"
         "On Fri, 28 Mar 2026 10:00:00 -0400, Alice Example <alice@example.com> wrote:"
         in content
     )
