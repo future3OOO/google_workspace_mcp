@@ -757,6 +757,12 @@ async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitt
     forwarded_message["From"] = "sender@example.com"
     forwarded_message["To"] = "recipient@example.com"
     forwarded_message.set_content("Forwarded body")
+    forwarded_message.add_attachment(
+        b"INNERDATA",
+        maintype="application",
+        subtype="pdf",
+        filename="inner.pdf",
+    )
     if filename is None:
         existing_message.add_attachment(
             forwarded_message.as_bytes(policy=SMTP),
@@ -801,6 +807,9 @@ async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitt
 
     assert len(preserved_parts) == 1
     assert preserved_parts[0].get_filename() == expected_filename
+    assert [attachment.get_filename() for attachment in parsed.iter_attachments()] == [
+        expected_filename
+    ]
 
 
 @pytest.mark.asyncio
@@ -885,7 +894,6 @@ async def test_update_gmail_draft_preserves_cid_attachment_as_regular_attachment
     existing_message = EmailMessage(policy=SMTP)
     existing_message["Subject"] = "Old subject"
     existing_message["To"] = "recipient@example.com"
-    existing_message["From"] = "Existing Sender <alias@example.com>"
     existing_message["In-Reply-To"] = "<m2@example.com>"
     existing_message.set_content("Plain fallback")
     existing_message.add_alternative(
@@ -924,6 +932,7 @@ async def test_update_gmail_draft_preserves_cid_attachment_as_regular_attachment
     attachments = list(parsed.iter_attachments())
 
     assert len(attachments) == 1
+    assert parsed["From"] is None
     assert parsed["In-Reply-To"] == "<m2@example.com>"
     assert parsed["References"] is None
     assert attachments[0].get_filename() == "logo.png"

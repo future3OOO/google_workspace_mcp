@@ -747,8 +747,11 @@ def _extract_preserved_attachments(
 ) -> List[dict[str, Any]]:
     """Extract attachment-like MIME parts that should survive draft updates."""
     preserved_attachments: List[dict[str, Any]] = []
+    skipped_descendant_ids: set[int] = set()
 
     for part in parsed_message.walk():
+        if id(part) in skipped_descendant_ids:
+            continue
         disposition = part.get_content_disposition()
         content_id = part.get("Content-ID")
         filename = part.get_filename()
@@ -758,6 +761,9 @@ def _extract_preserved_attachments(
             continue
 
         if part.get_content_type() == "message/rfc822":
+            skipped_descendant_ids.update(
+                id(child) for child in part.walk() if child is not part
+            )
             content_message = part.get_content()
             content = (
                 content_message.as_bytes(policy=SMTP)
@@ -1989,7 +1995,7 @@ async def draft_gmail_message(
         cc=cc,
         bcc=bcc,
         from_name=from_name,
-        from_email=from_email,
+        from_email=user_google_email if from_email is None else from_email,
         thread_id=thread_id,
         in_reply_to=in_reply_to,
         references=references,
@@ -2030,7 +2036,7 @@ async def _build_draft_request_body(
     if quote_original and not thread_id:
         raise UserInputError("quote_original requires thread_id.")
 
-    sender_email = user_google_email if from_email is None else from_email
+    sender_email = from_email
     signature_sender_email = sender_email or user_google_email
     draft_body = body
     signature_html = ""
