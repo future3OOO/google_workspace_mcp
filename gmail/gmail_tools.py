@@ -799,14 +799,13 @@ def _extract_preserved_attachments(
         if not (filename or disposition in {"attachment", "inline"} or content_id):
             return
 
-        # A text/plain or text/html body part with a Content-ID but no
-        # filename is the message body, not an attachment.  Some clients
-        # mark these parts ``Content-Disposition: inline`` inside
-        # ``multipart/related``; only an explicit ``attachment``
+        # A text/plain or text/html part without a filename is almost
+        # certainly the message body, not a real attachment.  Some clients
+        # (Thunderbird, Apple Mail) mark these ``Content-Disposition: inline``
+        # and may add a ``Content-ID``; only an explicit ``attachment``
         # disposition should override this heuristic.
         if (
-            content_id
-            and not filename
+            not filename
             and disposition != "attachment"
             and part_type in {"text/plain", "text/html"}
         ):

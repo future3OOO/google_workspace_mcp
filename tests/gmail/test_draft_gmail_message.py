@@ -1342,6 +1342,34 @@ async def test_update_gmail_draft_preserves_cid_attachment_as_regular_attachment
     assert attachments[0].get("Content-ID") == "<logo>"
 
 
+def test_extract_preserved_attachments_skips_inline_html_body_without_cid():
+    """Inline text/html body part without Content-ID must not be preserved."""
+    msg = EmailMessage(policy=SMTP)
+    msg.set_content("Plain fallback")
+    msg.add_alternative("<html><body><p>Body</p></body></html>", subtype="html")
+    # Manually set Content-Disposition: inline on the HTML body part (as
+    # Thunderbird / Apple Mail sometimes do).
+    html_part = msg.get_body(preferencelist=("html",))
+    del html_part["Content-Disposition"]
+    html_part["Content-Disposition"] = "inline"
+
+    preserved = gmail_tools._extract_preserved_attachments(msg)
+    assert preserved == []
+
+
+def test_extract_preserved_attachments_skips_inline_plain_body_without_cid():
+    """Inline text/plain body part without Content-ID must not be preserved."""
+    msg = EmailMessage(policy=SMTP)
+    msg.set_content("Plain body")
+    # Manually set Content-Disposition: inline on the plain body part.
+    body_part = msg.get_body(preferencelist=("plain",))
+    del body_part["Content-Disposition"]
+    body_part["Content-Disposition"] = "inline"
+
+    preserved = gmail_tools._extract_preserved_attachments(msg)
+    assert preserved == []
+
+
 @pytest.mark.asyncio
 async def test_update_gmail_draft_rejects_blank_draft_id():
     mock_service = Mock()
