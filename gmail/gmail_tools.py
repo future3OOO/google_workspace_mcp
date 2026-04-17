@@ -757,6 +757,12 @@ def _extract_preserved_attachments(
 ) -> List[dict[str, Any]]:
     """Extract attachment-like MIME parts that should survive draft updates."""
     preserved_attachments: List[dict[str, Any]] = []
+    referenced_cids = {
+        f"<{match}>"
+        for part in parsed_message.walk()
+        if part.get_content_type() == "text/html"
+        for match in re.findall(r"cid:([^\"' >]+)", part.get_content() or "")
+    }
 
     def _visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
         disposition = part.get_content_disposition()
@@ -794,7 +800,9 @@ def _extract_preserved_attachments(
                 "mime_type": part_type or "application/octet-stream",
                 "disposition": (
                     "inline"
-                    if content_id and parent_type == "multipart/related"
+                    if content_id
+                    and content_id in referenced_cids
+                    and parent_type == "multipart/related"
                     else disposition
                 ),
                 "content_id": content_id,
@@ -873,9 +881,13 @@ def _build_attachment_error_entry(
 ) -> Dict[str, Any]:
     """Preserve failed attachment context so message creation can continue."""
     failed_attachment = dict(attachment)
+    error_detail = str(exc)
     if "url" in failed_attachment:
-        failed_attachment["display_url"] = _redact_url(str(failed_attachment["url"]))
-    failed_attachment["error"] = str(exc)
+        raw_url = str(failed_attachment["url"])
+        redacted_url = _redact_url(raw_url)
+        failed_attachment["display_url"] = redacted_url
+        error_detail = error_detail.replace(raw_url, redacted_url)
+    failed_attachment["error"] = error_detail
     failed_attachment["error_type"] = type(exc).__name__
     return failed_attachment
 
@@ -973,7 +985,11 @@ async def _resolve_url_attachments(
         try:
             local = _try_read_local_attachment(url)
         except Exception as exc:
-            logger.exception("Failed to read local attachment URL %s", _redact_url(url))
+            logger.error(
+                "Failed to read local attachment URL %s: %s",
+                _redact_url(url),
+                _build_attachment_error_entry(att, exc)["error"],
+            )
             resolved.append(_build_attachment_error_entry(att, exc))
             continue
         if local is not None:
@@ -991,7 +1007,11 @@ async def _resolve_url_attachments(
         try:
             data, resp = await _download_attachment_bytes(url)
         except Exception as exc:
-            logger.exception("Failed to fetch attachment URL %s", _redact_url(url))
+            logger.error(
+                "Failed to fetch attachment URL %s: %s",
+                _redact_url(url),
+                _build_attachment_error_entry(att, exc)["error"],
+            )
             resolved.append(_build_attachment_error_entry(att, exc))
             continue
 
@@ -2454,9 +2474,10 @@ async def update_gmail_draft(
         Field(
             description=(
                 "Optional replacement attachments. Omit to preserve existing attachments; "
-                "pass an empty list to clear. Each can have: 'path', OR 'content' + "
-                "'filename'. Optional 'mime_type'."
-            ),
+                "pass an empty list to clear. Each can have: 'url' (including MCP "
+                "attachment URLs), 'path', OR 'content' + 'filename'. Optional "
+                "'mime_type'."
+            )
         ),
     ] = None,
     include_signature: Annotated[

@@ -749,6 +749,31 @@ async def test_resolve_url_attachments_rejects_oversized(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resolve_url_attachments_redacts_url_details_in_errors(
+    monkeypatch, caplog
+):
+    async def _boom(_url):
+        raise RuntimeError(
+            "failed to fetch https://example.com/report.pdf?token=secret&sig=abc"
+        )
+
+    monkeypatch.setattr(gmail_tools, "_download_attachment_bytes", _boom)
+
+    with caplog.at_level("ERROR"):
+        resolved = await _resolve_url_attachments(
+            [{"url": "https://example.com/report.pdf?token=secret&sig=abc"}]
+        )
+
+    assert resolved[0]["display_url"] == "https://example.com/report.pdf"
+    assert resolved[0]["error_type"] == "RuntimeError"
+    assert "token=secret" not in resolved[0]["error"]
+    assert "sig=abc" not in resolved[0]["error"]
+    assert "https://example.com/report.pdf" in resolved[0]["error"]
+    assert "token=secret" not in caplog.text
+    assert "sig=abc" not in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_with_url_attachment(monkeypatch):
     """End-to-end: draft_gmail_message should accept a URL attachment."""
     fake_response = _FakeStreamResponse(
@@ -1214,6 +1239,54 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
     assert len(preserved_parts) == 1
     assert preserved_parts[0].get_filename() == "logo.png"
     assert preserved_parts[0].get_content_disposition() == "inline"
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_related_cid_attachment_disposition():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative(
+        "<html><body><p>Old body</p></body></html>", subtype="html"
+    )
+    existing_message.get_body(preferencelist=("html",)).add_related(
+        b"PNGDATA",
+        maintype="image",
+        subtype="png",
+        cid="<logo>",
+        filename="logo.png",
+        disposition="attachment",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="<html><body><p>Updated body</p></body></html>",
+        body_format="html",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    attachments = list(parsed.iter_attachments())
+
+    assert len(attachments) == 1
+    assert attachments[0].get_filename() == "logo.png"
+    assert attachments[0].get_content_disposition() == "attachment"
+    assert attachments[0].get("Content-ID") == "<logo>"
 
 
 @pytest.mark.asyncio

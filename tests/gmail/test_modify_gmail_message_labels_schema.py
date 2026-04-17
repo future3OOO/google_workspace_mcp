@@ -96,3 +96,4 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
     attachments_description = properties["attachments"]["description"]
     assert "Omit to preserve existing attachments" in attachments_description
     assert "empty list to clear" in attachments_description
+    assert "'url'" in attachments_description
