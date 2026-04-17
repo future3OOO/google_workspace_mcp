@@ -1962,6 +1962,10 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
+    from_email = (
+        None if from_email is not None and not from_email.strip() else from_email
+    )
+
     if thread_id:
         to = None if to is not None and not to.strip() else to
         in_reply_to = (
