@@ -116,6 +116,59 @@ def _html_to_text(html: str) -> str:
         return html
 
 
+def _signature_html_to_text(signature_html: str) -> str:
+    """Convert Gmail signature HTML to readable plain text with block breaks."""
+
+    class _SignatureTextExtractor(HTMLParser):
+        _BLOCK_TAGS = {"br", "div", "p", "tr", "table", "tbody", "li"}
+
+        def __init__(self):
+            super().__init__()
+            self._parts: list[str] = []
+            self._skip = False
+
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"):
+                self._skip = True
+            if tag == "br":
+                self._parts.append("\n")
+
+        def handle_endtag(self, tag):
+            if tag in ("script", "style"):
+                self._skip = False
+            if tag in self._BLOCK_TAGS and self._parts and self._parts[-1] != "\n":
+                self._parts.append("\n")
+
+        def handle_data(self, data):
+            if not self._skip:
+                self._parts.append(data)
+
+        def get_text(self) -> str:
+            text = "".join(self._parts).replace("\xa0", " ")
+            normalized_lines = [" ".join(line.split()) for line in text.splitlines()]
+
+            output: list[str] = []
+            previous_blank = False
+            for line in normalized_lines:
+                if line:
+                    output.append(line)
+                    previous_blank = False
+                elif not previous_blank and output:
+                    output.append("")
+                    previous_blank = True
+
+            if output and output[-1] == "":
+                output.pop()
+            return "\n".join(output)
+
+    try:
+        parser = _SignatureTextExtractor()
+        parser.feed(signature_html)
+        return parser.get_text()
+    except Exception:
+        return _html_to_text(signature_html)
+
+
 def _extract_message_body(payload):
     """
     Helper function to extract plain text body from a Gmail message payload.
@@ -407,7 +460,7 @@ def _append_signature_to_body(
         separator = "<br><br>" if body.strip() else ""
         return f"{body}{separator}{signature_html}"
 
-    signature_text = _html_to_text(signature_html).strip()
+    signature_text = _signature_html_to_text(signature_html).strip()
     if not signature_text:
         return body
     separator = "\n\n" if body.strip() else ""
@@ -486,7 +539,7 @@ def _build_quoted_reply_body(
     # Plain text path
     sig_block = ""
     if signature_html and signature_html.strip():
-        sig_text = _html_to_text(signature_html).strip()
+        sig_text = _signature_html_to_text(signature_html).strip()
         if sig_text:
             sig_block = f"\n\n{sig_text}"
 
