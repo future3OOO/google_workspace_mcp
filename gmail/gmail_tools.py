@@ -757,51 +757,52 @@ def _extract_preserved_attachments(
 ) -> List[dict[str, Any]]:
     """Extract attachment-like MIME parts that should survive draft updates."""
     preserved_attachments: List[dict[str, Any]] = []
-    skipped_descendant_ids: set[int] = set()
 
-    for part in parsed_message.walk():
-        if id(part) in skipped_descendant_ids:
-            continue
+    def _visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
         disposition = part.get_content_disposition()
         content_id = part.get("Content-ID")
         filename = part.get_filename()
-        if part.is_multipart() and not (
-            filename or disposition in {"attachment", "inline"} or content_id
-        ):
-            continue
+        part_type = part.get_content_type()
 
-        if part.get_content_type() == "message/rfc822":
-            skipped_descendant_ids.update(
-                id(child) for child in part.walk() if child is not part
-            )
+        if part_type == "message/rfc822":
             content_message = part.get_content()
             content = (
                 content_message.as_bytes(policy=SMTP)
                 if hasattr(content_message, "as_bytes")
                 else None
             )
+            if content is None:
+                return
+        elif part.is_multipart():
+            if not (filename or disposition in {"attachment", "inline"} or content_id):
+                for child in part.iter_parts():
+                    _visit(child, part_type)
+                return
+            content = part.as_bytes(policy=SMTP)
         else:
             content = part.get_payload(decode=True)
-            if content is None and part.is_multipart():
-                content = part.as_bytes(policy=SMTP)
-
-        if content is None:
-            continue
+            if content is None:
+                return
 
         if not (filename or disposition in {"attachment", "inline"} or content_id):
-            continue
+            return
 
         preserved_attachments.append(
             {
                 "filename": filename,
                 "content": base64.b64encode(content).decode("ascii"),
-                "mime_type": part.get_content_type() or "application/octet-stream",
-                "disposition": disposition,
+                "mime_type": part_type or "application/octet-stream",
+                "disposition": (
+                    "inline"
+                    if content_id and parent_type == "multipart/related"
+                    else disposition
+                ),
                 "content_id": content_id,
                 "_preserved": _PRESERVED_ATTACHMENT_SENTINEL,
             }
         )
 
+    _visit(parsed_message)
     return preserved_attachments
 
 
@@ -1187,7 +1188,10 @@ def _prepare_gmail_message(
             if disposition:
                 attachment_kwargs["disposition"] = disposition
 
-            if html_part is not None and disposition == "inline":
+            if html_part is not None and (
+                disposition == "inline"
+                or (content_id and disposition is None and preserved_attachment)
+            ):
                 html_part.add_related(
                     file_data,
                     maintype=main_type,
@@ -2098,7 +2102,7 @@ async def draft_gmail_message(
     attachments: Annotated[
         Optional[DictList],
         Field(
-            description="Optional list of attachments. Each can have: 'path' (file path, auto-encodes), OR 'content' (standard base64, not urlsafe) + 'filename'. Optional 'mime_type' (auto-detected from path if not provided).",
+            description="Optional list of attachments. Each can have: 'url' (fetched by _resolve_url_attachments, including MCP attachment URLs), OR 'path' (file path, auto-encodes), OR 'content' (standard base64, not urlsafe) + 'filename'. Optional 'mime_type' (auto-detected from path if not provided).",
         ),
     ] = None,
     include_signature: Annotated[
@@ -2480,6 +2484,21 @@ async def update_gmail_draft(
     if not draft_id:
         raise UserInputError("draft_id is required.")
 
+    def _normalize_optional_update_str(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped if stripped else ""
+
+    to = _normalize_optional_update_str(to)
+    cc = _normalize_optional_update_str(cc)
+    bcc = _normalize_optional_update_str(bcc)
+    from_name = _normalize_optional_update_str(from_name)
+    from_email = _normalize_optional_update_str(from_email)
+    thread_id = _normalize_optional_update_str(thread_id)
+    in_reply_to = _normalize_optional_update_str(in_reply_to)
+    references = _normalize_optional_update_str(references)
+
     preserve_from_name = from_name is None
     if (
         preserve_from_name
@@ -2544,6 +2563,8 @@ async def update_gmail_draft(
         if attachments is None:
             attachments = _extract_preserved_attachments(parsed_message)
 
+    resolved_attachments = await _resolve_url_attachments(attachments)
+
     (
         draft_body,
         attached_count,
@@ -2562,7 +2583,7 @@ async def update_gmail_draft(
         thread_id=thread_id,
         in_reply_to=in_reply_to,
         references=references,
-        attachments=attachments,
+        attachments=resolved_attachments,
         include_signature=include_signature,
         quote_original=quote_original,
     )

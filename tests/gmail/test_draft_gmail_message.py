@@ -1000,11 +1000,11 @@ async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty
         service=mock_service,
         user_google_email="user@example.com",
         draft_id="draft123",
-        to="recipient@example.com",
-        from_email="",
-        in_reply_to="",
-        references="",
-        thread_id="thread123",
+        to=" ",
+        from_email=" ",
+        in_reply_to=" ",
+        references=" ",
+        thread_id=" ",
         attachments=[],
         subject="Updated subject",
         body="Updated body",
@@ -1016,9 +1016,54 @@ async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty
     )
     parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
 
+    assert parsed["To"] is None
     assert parsed["From"] is None
     assert parsed["In-Reply-To"] is None
     assert parsed["References"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_resolves_url_attachments(monkeypatch):
+    fake_response = _FakeStreamResponse(
+        200,
+        headers={"content-type": "application/pdf"},
+        chunks=[b"pdf-content-here"],
+    )
+    monkeypatch.setattr(
+        gmail_tools, "ssrf_safe_stream", _mock_stream_response(fake_response)
+    )
+
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="Updated body",
+        attachments=[{"url": "https://example.com/doc.pdf", "filename": "doc.pdf"}],
+        include_signature=False,
+    )
+
+    assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    raw_bytes = base64.urlsafe_b64decode(update_kwargs["body"]["message"]["raw"])
+    assert b"Content-Disposition: attachment;" in raw_bytes
+    assert b"doc.pdf" in raw_bytes
 
 
 @pytest.mark.asyncio
@@ -1138,7 +1183,6 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
         subtype="png",
         cid="<logo>",
         filename="logo.png",
-        disposition="inline",
     )
     mock_service.users().drafts().get().execute.return_value = {
         "message": {
