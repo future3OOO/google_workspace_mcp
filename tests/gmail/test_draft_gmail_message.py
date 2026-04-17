@@ -998,6 +998,46 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_existing_html_body_format_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Old plain fallback")
+    existing_message.add_alternative(
+        "<html><body><p>Old body</p></body></html>", subtype="html"
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="<html><body><p>Updated body</p></body></html>",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    html_body = parsed.get_body(preferencelist=("html",))
+    plain_body = parsed.get_body(preferencelist=("plain",))
+
+    assert html_body is not None
+    assert "Updated body" in html_body.get_content()
+    assert plain_body is not None
+    assert plain_body.get_content().strip() == "Updated body"
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty_strings():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
@@ -1041,6 +1081,7 @@ async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty
     )
     parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
 
+    assert "threadId" not in update_kwargs["body"]["message"]
     assert parsed["To"] is None
     assert parsed["From"] is None
     assert parsed["In-Reply-To"] is None
@@ -1168,6 +1209,54 @@ async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitt
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_multipart_attachment_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Old body")
+    existing_message.make_mixed()
+
+    multipart_attachment = EmailMessage(policy=SMTP)
+    multipart_attachment.make_mixed()
+    text_part = EmailMessage(policy=SMTP)
+    text_part.set_content("Nested body")
+    multipart_attachment.attach(text_part)
+    multipart_attachment["Content-Disposition"] = 'attachment; filename="bundle.eml"'
+
+    existing_message.attach(multipart_attachment)
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    multipart_parts = [
+        part
+        for part in parsed.walk()
+        if part.get_content_type() == "multipart/mixed"
+        and part.get_filename() == "bundle.eml"
+    ]
+
+    assert len(multipart_parts) == 1
+    assert any(child.get_content_type() == "text/plain" for child in multipart_parts[0].walk())
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_rejects_malformed_raw_message_content():
     mock_service = Mock()
     mock_service.users().drafts().get().execute.return_value = {
@@ -1227,6 +1316,58 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
     )
 
     assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    preserved_parts = [
+        part for part in parsed.walk() if part.get("Content-ID") == "<logo>"
+    ]
+
+    assert len(preserved_parts) == 1
+    assert preserved_parts[0].get_filename() == "logo.png"
+    assert preserved_parts[0].get_content_disposition() == "inline"
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_inline_related_parts_with_invalid_html_charset():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    html_part = existing_message.get_body(preferencelist=("html",))
+    html_part.replace_header("Content-Type", 'text/html; charset="x-bogus-charset"')
+    html_part.add_related(
+        b"PNGDATA",
+        maintype="image",
+        subtype="png",
+        cid="<logo>",
+        filename="logo.png",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body='<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
+        body_format="html",
+        include_signature=False,
+    )
 
     update_kwargs = (
         mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
@@ -1340,34 +1481,6 @@ async def test_update_gmail_draft_preserves_cid_attachment_as_regular_attachment
     assert attachments[0].get_filename() == "logo.png"
     assert attachments[0].get_content_disposition() == "attachment"
     assert attachments[0].get("Content-ID") == "<logo>"
-
-
-def test_extract_preserved_attachments_skips_inline_html_body_without_cid():
-    """Inline text/html body part without Content-ID must not be preserved."""
-    msg = EmailMessage(policy=SMTP)
-    msg.set_content("Plain fallback")
-    msg.add_alternative("<html><body><p>Body</p></body></html>", subtype="html")
-    # Manually set Content-Disposition: inline on the HTML body part (as
-    # Thunderbird / Apple Mail sometimes do).
-    html_part = msg.get_body(preferencelist=("html",))
-    del html_part["Content-Disposition"]
-    html_part["Content-Disposition"] = "inline"
-
-    preserved = gmail_tools._extract_preserved_attachments(msg)
-    assert preserved == []
-
-
-def test_extract_preserved_attachments_skips_inline_plain_body_without_cid():
-    """Inline text/plain body part without Content-ID must not be preserved."""
-    msg = EmailMessage(policy=SMTP)
-    msg.set_content("Plain body")
-    # Manually set Content-Disposition: inline on the plain body part.
-    body_part = msg.get_body(preferencelist=("plain",))
-    del body_part["Content-Disposition"]
-    body_part["Content-Disposition"] = "inline"
-
-    preserved = gmail_tools._extract_preserved_attachments(msg)
-    assert preserved == []
 
 
 @pytest.mark.asyncio

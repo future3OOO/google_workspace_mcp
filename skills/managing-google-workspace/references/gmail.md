@@ -91,6 +91,7 @@ Send an email. Supports new messages, replies, HTML, attachments, CC/BCC, and Se
 **Attachment format** (each item is an object):
 - **File path**: `{"path": "path/to/file.pdf"}` -- optionally add `"filename"` and `"mime_type"`. Use forward slashes on all platforms
 - **Base64 content**: `{"content": "base64data", "filename": "doc.pdf"}` -- optionally add `"mime_type"` (must be standard base64, not urlsafe)
+- **URL**: `{"url": "https://example.com/file.pdf"}` -- optionally add `"filename"` and `"mime_type"`; supported by `send_gmail_message`, `draft_gmail_message`, and `update_gmail_draft`
 
 ### draft_gmail_message
 Create a draft. Same capabilities as send but with additional signature/quoting options.
@@ -114,14 +115,14 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
 
 ### update_gmail_draft
-Replace the subject/body of an existing draft while preserving omitted draft fields. Omit `to`, `cc`, `bcc`, `from_name`, `from_email`, `thread_id`, `in_reply_to`, `references`, or `attachments` to preserve the existing value; pass an empty string/list to clear the field where supported.
+Replace the subject/body of an existing draft while preserving omitted draft fields. Omit `body_format` to preserve the existing draft body format. Omit `to`, `cc`, `bcc`, `from_name`, `from_email`, `thread_id`, `in_reply_to`, `references`, or `attachments` to preserve the existing value; pass an empty string/list to clear the field where supported.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
 | draft_id | string | yes | | Gmail draft ID to update |
 | subject | string | yes | | Replacement subject |
 | body | string | yes | | Replacement body |
-| body_format | string | no | "plain" | "plain" or "html" |
+| body_format | string | no | preserve existing | `plain` or `html`; omit to preserve current draft format |
 | user_google_email | string | yes | | |
 | to | string | no | | Omit to preserve; empty string clears |
 | cc | string | no | | Omit to preserve; empty string clears |

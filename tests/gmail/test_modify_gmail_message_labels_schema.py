@@ -79,6 +79,10 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
     components = get_tool_components(server)
     properties = components["update_gmail_draft"].parameters["properties"]
 
+    body_format_description = properties["body_format"]["description"]
+    assert "preserve the existing draft body format" in body_format_description
+    assert properties["body_format"]["default"] is None
+
     for field_name in (
         "to",
         "cc",
@@ -92,6 +96,10 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
         description = properties[field_name]["description"]
         assert "Omit to preserve" in description
         assert "empty string to clear" in description
+
+    body_format_description = properties["body_format"]["description"]
+    assert properties["body_format"]["default"] is None
+    assert "Omit to preserve the existing draft body format" in body_format_description
 
     attachments_description = properties["attachments"]["description"]
     assert "Omit to preserve existing attachments" in attachments_description
