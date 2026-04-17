@@ -128,9 +128,9 @@ Replace the subject/body of an existing draft while preserving omitted draft fie
 | bcc | string | no | | Omit to preserve; empty string clears |
 | from_name | string | no | | Omit to preserve; empty string clears |
 | from_email | string | no | | Omit to preserve existing alias; empty string clears |
-| thread_id | string | no | | Omit to preserve current thread association |
-| in_reply_to | string | no | | Omit to preserve current Message-ID linkage |
-| references | string | no | | Omit to preserve current threading chain |
+| thread_id | string | no | | Omit to preserve; empty string clears |
+| in_reply_to | string | no | | Omit to preserve; empty string clears |
+| references | string | no | | Omit to preserve; empty string clears |
 | attachments | array | no | | Omit to preserve existing attachments/inline parts; empty list clears |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original quoted content (requires thread_id) |

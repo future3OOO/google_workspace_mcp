@@ -943,7 +943,7 @@ def _prepare_gmail_message(
             if disposition:
                 attachment_kwargs["disposition"] = disposition
 
-            if html_part is not None and (content_id or disposition == "inline"):
+            if html_part is not None and disposition == "inline":
                 html_part.add_related(
                     file_data,
                     maintype=main_type,
