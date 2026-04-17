@@ -765,8 +765,10 @@ def _extract_preserved_attachments(
             html_text = part.get_content() or ""
         except Exception:
             # Drafts from external clients may have unknown charsets or broken
-            # content-transfer-encoding; skip unscannable HTML parts.
-            continue
+            # content-transfer-encoding. Fall back to a lossy decode so CID
+            # references can still be detected for preserved inline parts.
+            payload = part.get_payload(decode=True)
+            html_text = payload.decode("utf-8", errors="ignore") if payload else ""
         for match in re.findall(r"cid:([^\"' >]+)", html_text, re.IGNORECASE):
             referenced_cids.add(f"<{match}>")
 
@@ -1003,12 +1005,13 @@ async def _resolve_url_attachments(
         try:
             local = _try_read_local_attachment(url)
         except Exception as exc:
+            error_entry = _build_attachment_error_entry(att, exc)
             logger.error(
                 "Failed to read local attachment URL %s: %s",
                 _redact_url(url),
-                _build_attachment_error_entry(att, exc)["error"],
+                error_entry["error"],
             )
-            resolved.append(_build_attachment_error_entry(att, exc))
+            resolved.append(error_entry)
             continue
         if local is not None:
             data, local_filename, local_mime = local
@@ -1025,12 +1028,13 @@ async def _resolve_url_attachments(
         try:
             data, resp = await _download_attachment_bytes(url)
         except Exception as exc:
+            error_entry = _build_attachment_error_entry(att, exc)
             logger.error(
                 "Failed to fetch attachment URL %s: %s",
                 _redact_url(url),
-                _build_attachment_error_entry(att, exc)["error"],
+                error_entry["error"],
             )
-            resolved.append(_build_attachment_error_entry(att, exc))
+            resolved.append(error_entry)
             continue
 
         # Infer filename from URL path if not provided.
@@ -2413,11 +2417,11 @@ async def update_gmail_draft(
     subject: Annotated[str, Field(description="Replacement email subject.")],
     body: Annotated[str, Field(description="Replacement email body.")],
     body_format: Annotated[
-        Literal["plain", "html"],
+        Optional[Literal["plain", "html"]],
         Field(
-            description="Replacement body format. Use 'plain' for plaintext or 'html' for HTML content.",
+            description="Replacement body format. Omit to preserve the existing draft body format; use 'plain' for plaintext or 'html' for HTML content.",
         ),
-    ] = "plain",
+    ] = None,
     to: Annotated[
         Optional[str],
         Field(
@@ -2546,6 +2550,7 @@ async def update_gmail_draft(
         or in_reply_to is None
         or references is None
         or attachments is None
+        or body_format is None
     ):
         existing_draft = await asyncio.to_thread(
             service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
@@ -2596,8 +2601,17 @@ async def update_gmail_draft(
         references = (
             (existing_headers["References"] or "") if references is None else references
         )
+        if body_format is None:
+            body_format = (
+                "html"
+                if parsed_message.get_body(preferencelist=("html",)) is not None
+                else "plain"
+            )
         if attachments is None:
             attachments = _extract_preserved_attachments(parsed_message)
+
+    if body_format is None:
+        body_format = "plain"
 
     resolved_attachments = await _resolve_url_attachments(attachments)
 

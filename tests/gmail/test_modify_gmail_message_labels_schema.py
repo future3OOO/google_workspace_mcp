@@ -93,6 +93,10 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
         assert "Omit to preserve" in description
         assert "empty string to clear" in description
 
+    body_format_description = properties["body_format"]["description"]
+    assert properties["body_format"]["default"] is None
+    assert "Omit to preserve the existing draft body format" in body_format_description
+
     attachments_description = properties["attachments"]["description"]
     assert "Omit to preserve existing attachments" in attachments_description
     assert "empty list to clear" in attachments_description

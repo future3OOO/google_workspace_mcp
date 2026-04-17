@@ -998,6 +998,53 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_existing_html_format_when_body_format_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    existing_message.get_body(preferencelist=("html",)).add_related(
+        b"PNGDATA",
+        maintype="image",
+        subtype="png",
+        cid="<logo>",
+        filename="logo.png",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body='<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    preserved_parts = [
+        part for part in parsed.walk() if part.get("Content-ID") == "<logo>"
+    ]
+
+    assert parsed.get_body(preferencelist=("html",)) is not None
+    assert len(preserved_parts) == 1
+    assert preserved_parts[0].get_content_disposition() == "inline"
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty_strings():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
@@ -1187,6 +1234,62 @@ async def test_update_gmail_draft_rejects_malformed_raw_message_content():
         )
 
     assert not mock_service.users.return_value.drafts.return_value.update.called
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_inline_related_parts_when_html_charset_is_invalid():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    html_part = existing_message.get_body(preferencelist=("html",))
+    html_part.replace_header("Content-Type", 'text/html; charset="x-bogus-charset"')
+    html_part.add_related(
+        b"PNGDATA",
+        maintype="image",
+        subtype="png",
+        cid="<logo>",
+        filename="logo.png",
+    )
+    related_part = next(
+        part for part in existing_message.walk() if part.get("Content-ID") == "<logo>"
+    )
+    del related_part["Content-Disposition"]
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body='<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
+        body_format="html",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    preserved_parts = [
+        part for part in parsed.walk() if part.get("Content-ID") == "<logo>"
+    ]
+
+    assert len(preserved_parts) == 1
+    assert preserved_parts[0].get_content_type() == "image/png"
+    assert preserved_parts[0].get_content_disposition() == "inline"
 
 
 @pytest.mark.asyncio

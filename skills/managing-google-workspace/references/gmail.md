@@ -121,7 +121,7 @@ Replace the subject/body of an existing draft while preserving omitted draft fie
 | draft_id | string | yes | | Gmail draft ID to update |
 | subject | string | yes | | Replacement subject |
 | body | string | yes | | Replacement body |
-| body_format | string | no | "plain" | "plain" or "html" |
+| body_format | string | no | preserve existing format | Omit to preserve the current draft format, or pass "plain" / "html" to override |
 | user_google_email | string | yes | | |
 | to | string | no | | Omit to preserve; empty string clears |
 | cc | string | no | | Omit to preserve; empty string clears |
