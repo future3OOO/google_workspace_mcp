@@ -114,7 +114,7 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
 
 ### update_gmail_draft
-Replace the subject/body of an existing draft while preserving omitted draft fields. Omit `to`, `cc`, `bcc`, `from_name`, `thread_id`, `in_reply_to`, `references`, or `attachments` to preserve the existing value; pass an empty string/list to clear the field where supported.
+Replace the subject/body of an existing draft while preserving omitted draft fields. Omit `to`, `cc`, `bcc`, `from_name`, `from_email`, `thread_id`, `in_reply_to`, `references`, or `attachments` to preserve the existing value; pass an empty string/list to clear the field where supported.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
@@ -127,7 +127,7 @@ Replace the subject/body of an existing draft while preserving omitted draft fie
 | cc | string | no | | Omit to preserve; empty string clears |
 | bcc | string | no | | Omit to preserve; empty string clears |
 | from_name | string | no | | Omit to preserve; empty string clears |
-| from_email | string | no | | Omit to preserve existing alias |
+| from_email | string | no | | Omit to preserve existing alias; empty string clears |
 | thread_id | string | no | | Omit to preserve current thread association |
 | in_reply_to | string | no | | Omit to preserve current Message-ID linkage |
 | references | string | no | | Omit to preserve current threading chain |

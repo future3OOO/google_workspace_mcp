@@ -739,6 +739,9 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
     return context.get("message_ids", [])
 
 
+_PRESERVED_ATTACHMENT_SENTINEL = object()
+
+
 def _extract_preserved_attachments(
     parsed_message: EmailMessage,
 ) -> List[dict[str, Any]]:
@@ -779,7 +782,7 @@ def _extract_preserved_attachments(
                 "mime_type": part.get_content_type() or "application/octet-stream",
                 "disposition": disposition,
                 "content_id": content_id,
-                "_preserved": True,
+                "_preserved": _PRESERVED_ATTACHMENT_SENTINEL,
             }
         )
 
@@ -885,7 +888,9 @@ def _prepare_gmail_message(
         mime_type = attachment.get("mime_type")
         disposition = attachment.get("disposition")
         content_id = attachment.get("content_id")
-        preserved_attachment = bool(attachment.get("_preserved"))
+        preserved_attachment = (
+            attachment.get("_preserved") is _PRESERVED_ATTACHMENT_SENTINEL
+        )
 
         try:
             if file_path:
@@ -905,9 +910,7 @@ def _prepare_gmail_message(
                     if not mime_type:
                         mime_type = "application/octet-stream"
             elif content_base64:
-                if not filename and not (
-                    content_id or disposition == "inline" or preserved_attachment
-                ):
+                if not filename and not preserved_attachment:
                     logger.warning("Skipping attachment: missing filename")
                     continue
 
@@ -1959,6 +1962,15 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
+    if thread_id:
+        to = None if to is not None and not to.strip() else to
+        in_reply_to = (
+            None if in_reply_to is not None and not in_reply_to.strip() else in_reply_to
+        )
+        references = (
+            None if references is not None and not references.strip() else references
+        )
+
     (
         draft_body,
         attached_count,
@@ -2271,10 +2283,12 @@ async def update_gmail_draft(
             from_name = existing_from_name or None
         thread_id = message_data.get("threadId") if thread_id is None else thread_id
         in_reply_to = (
-            existing_headers["In-Reply-To"] if in_reply_to is None else in_reply_to
+            (existing_headers["In-Reply-To"] or "")
+            if in_reply_to is None
+            else in_reply_to
         )
         references = (
-            existing_headers["References"] if references is None else references
+            (existing_headers["References"] or "") if references is None else references
         )
         if attachments is None:
             attachments = _extract_preserved_attachments(parsed_message)

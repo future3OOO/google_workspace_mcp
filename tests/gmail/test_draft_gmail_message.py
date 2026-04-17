@@ -304,6 +304,33 @@ async def test_draft_gmail_message_builds_html_attachments_with_mixed_top_level(
 
 
 @pytest.mark.asyncio
+async def test_draft_gmail_message_rejects_public_unnamed_attachment_metadata_bypass():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="No valid attachments were added"):
+        await _unwrap(draft_gmail_message)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            to="recipient@example.com",
+            subject="Attachment test",
+            body="<p>Please see attached.</p>",
+            body_format="html",
+            attachments=[
+                {
+                    "content": "aGVsbG8=",
+                    "mime_type": "image/png",
+                    "content_id": "cid:test",
+                    "disposition": "inline",
+                    "_preserved": True,
+                }
+            ],
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.create.called
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_autofills_reply_recipient_from_thread_target():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
@@ -412,6 +439,45 @@ async def test_draft_gmail_message_autofills_reply_headers_from_thread():
         in raw_text
     )
     assert create_kwargs["body"]["message"]["threadId"] == "thread123"
+
+
+@pytest.mark.asyncio
+async def test_draft_gmail_message_treats_blank_reply_fields_like_omission():
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message(
+                "<msg1@example.com>", from_value="Alice <alice@example.com>"
+            ),
+            _thread_message(
+                "<msg2@example.com>",
+                from_value="Alice <alice@example.com>",
+                reply_to="reply@example.com",
+            ),
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to="",
+        subject="Meeting tomorrow",
+        body="Thanks for the update.",
+        thread_id="thread123",
+        in_reply_to="",
+        references="",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+
+    assert parsed["To"] == "reply@example.com"
+    assert parsed["In-Reply-To"] == "<msg2@example.com>"
+    assert parsed["References"] == "<msg1@example.com> <msg2@example.com>"
 
 
 @pytest.mark.asyncio
@@ -644,6 +710,41 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
     assert [attachment.get_filename() for attachment in parsed.iter_attachments()] == [
         "existing.txt"
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_missing_references_header_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message["In-Reply-To"] = "<m2@example.com>"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "thread123",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert parsed["In-Reply-To"] == "<m2@example.com>"
+    assert parsed["References"] is None
 
 
 @pytest.mark.asyncio
