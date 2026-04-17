@@ -757,12 +757,18 @@ def _extract_preserved_attachments(
 ) -> List[dict[str, Any]]:
     """Extract attachment-like MIME parts that should survive draft updates."""
     preserved_attachments: List[dict[str, Any]] = []
-    referenced_cids = {
-        f"<{match}>"
-        for part in parsed_message.walk()
-        if part.get_content_type() == "text/html"
-        for match in re.findall(r"cid:([^\"' >]+)", part.get_content() or "")
-    }
+    referenced_cids: set[str] = set()
+    for part in parsed_message.walk():
+        if part.get_content_type() != "text/html":
+            continue
+        try:
+            html_text = part.get_content() or ""
+        except Exception:
+            # Drafts from external clients may have unknown charsets or broken
+            # content-transfer-encoding; skip unscannable HTML parts.
+            continue
+        for match in re.findall(r"cid:([^\"' >]+)", html_text):
+            referenced_cids.add(f"<{match}>")
 
     def _visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
         disposition = part.get_content_disposition()
@@ -791,6 +797,17 @@ def _extract_preserved_attachments(
                 return
 
         if not (filename or disposition in {"attachment", "inline"} or content_id):
+            return
+
+        # A bare Content-ID on a text/plain or text/html body part does not
+        # make it an attachment; rebuilding it as one turns the draft body
+        # into a visible attachment on update.
+        if (
+            content_id
+            and not filename
+            and disposition not in {"attachment", "inline"}
+            and part_type in {"text/plain", "text/html"}
+        ):
             return
 
         preserved_attachments.append(
