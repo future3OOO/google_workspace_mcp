@@ -5,6 +5,7 @@ This module provides MCP tools for interacting with the Gmail API.
 """
 
 import logging
+import html
 import asyncio
 import base64
 import binascii
@@ -167,6 +168,12 @@ def _signature_html_to_text(signature_html: str) -> str:
         return parser.get_text()
     except Exception:
         return _html_to_text(signature_html)
+
+
+def _plain_text_to_html(body: str) -> str:
+    """Convert plain text into minimal safe HTML for Gmail rich composition."""
+    normalized_body = body.replace("\r\n", "\n").replace("\r", "\n")
+    return "<br>".join(html.escape(line) for line in normalized_body.split("\n"))
 
 
 def _extract_message_body(payload):
@@ -1026,6 +1033,7 @@ def _prepare_gmail_message(
     in_reply_to: Optional[str] = None,
     references: Optional[str] = None,
     body_format: Literal["plain", "html"] = "plain",
+    plain_text_body: Optional[str] = None,
     from_email: Optional[str] = None,
     from_name: Optional[str] = None,
     attachments: Optional[List[Dict[str, str]]] = None,
@@ -1043,6 +1051,7 @@ def _prepare_gmail_message(
         in_reply_to: Optional Message-ID of the message being replied to
         references: Optional chain of Message-IDs for proper threading
         body_format: Content type for the email body ('plain' or 'html')
+        plain_text_body: Optional plain-text fallback body when composing HTML
         from_email: Optional sender email address
         from_name: Optional sender display name (e.g., "Peter Hartree")
         attachments: Optional list of attachments. Each can have 'path' (file path) OR 'content' (base64) + 'filename'
@@ -1096,7 +1105,11 @@ def _prepare_gmail_message(
     if normalized_format == "html":
         # Include a text/plain fallback so reply drafts and recipients don't
         # depend on clients successfully parsing HTML-only bodies.
-        plain_body = _html_to_text(body).strip()
+        plain_body = (
+            plain_text_body
+            if plain_text_body is not None
+            else _html_to_text(body).strip()
+        )
         message.set_content(plain_body)
         message.add_alternative(body, subtype="html")
     else:
@@ -2013,13 +2026,13 @@ async def draft_gmail_message(
     service,
     user_google_email: str,
     subject: Annotated[str, Field(description="Email subject.")],
-    body: Annotated[str, Field(description="Email body (plain text).")],
+    body: Annotated[str, Field(description="Email body content.")],
     body_format: Annotated[
-        Literal["plain", "html"],
+        Optional[Literal["plain", "html"]],
         Field(
-            description="Email body format. Use 'plain' for plaintext or 'html' for HTML content.",
+            description="Optional email body format. Use 'plain' for plaintext or 'html' for HTML content. Omit to mirror Gmail draft composition: drafts with a Gmail HTML signature compose as HTML; otherwise plain.",
         ),
-    ] = "plain",
+    ] = None,
     to: Annotated[
         Optional[str],
         Field(
@@ -2088,8 +2101,8 @@ async def draft_gmail_message(
     Args:
         user_google_email (str): The user's Google email address. Required for authentication.
         subject (str): Email subject.
-        body (str): Email body (plain text).
-        body_format (Literal['plain', 'html']): Email body format. Defaults to 'plain'.
+        body (str): Email body content.
+        body_format (Optional[Literal['plain', 'html']]): Email body format. Omit to mirror Gmail draft composition when a Gmail HTML signature is available.
         to (Optional[str]): Optional recipient email address. Can be left empty for drafts.
         cc (Optional[str]): Optional CC email address.
         bcc (Optional[str]): Optional BCC email address.
@@ -2179,10 +2192,16 @@ async def draft_gmail_message(
     sender_email = from_email or user_google_email
     draft_body = body
     signature_html = ""
+    plain_text_body = None
     if include_signature:
         signature_html = await _get_send_as_signature_html(
             service, from_email=sender_email
         )
+
+    auto_html_signature = body_format is None and bool(signature_html.strip())
+    effective_body_format: Literal["plain", "html"] = (
+        "html" if auto_html_signature else (body_format or "plain")
+    )
 
     reply_context = None
     if thread_id and (quote_original or not in_reply_to or not references or not to):
@@ -2208,26 +2227,54 @@ async def draft_gmail_message(
         subject = target_reply.get("subject") or subject
 
     if quote_original and target_reply:
-        draft_body = _build_quoted_reply_body(
-            draft_body,
-            body_format,
-            signature_html,
-            {
-                "sender": target_reply.get("from") or "unknown",
-                "date": target_reply.get("date", ""),
-                "text_body": target_reply.get("text_body", ""),
-                "html_body": target_reply.get("html_body", ""),
-            },
-        )
+        original_message = {
+            "sender": target_reply.get("from") or "unknown",
+            "date": target_reply.get("date", ""),
+            "text_body": target_reply.get("text_body", ""),
+            "html_body": target_reply.get("html_body", ""),
+        }
+        if auto_html_signature:
+            plain_text_body = _build_quoted_reply_body(
+                draft_body,
+                "plain",
+                signature_html,
+                original_message,
+            )
+            draft_body = _build_quoted_reply_body(
+                _plain_text_to_html(draft_body),
+                "html",
+                signature_html,
+                original_message,
+            )
+        else:
+            draft_body = _build_quoted_reply_body(
+                draft_body,
+                effective_body_format,
+                signature_html,
+                original_message,
+            )
     else:
-        draft_body = _append_signature_to_body(draft_body, body_format, signature_html)
+        if auto_html_signature:
+            plain_text_body = _append_signature_to_body(
+                draft_body, "plain", signature_html
+            )
+            draft_body = _append_signature_to_body(
+                _plain_text_to_html(draft_body),
+                "html",
+                signature_html,
+            )
+        else:
+            draft_body = _append_signature_to_body(
+                draft_body, effective_body_format, signature_html
+            )
 
     resolved_attachments = await _resolve_url_attachments(attachments)
     raw_message, thread_id_final, attached_count, attachment_errors = (
         _prepare_gmail_message(
             subject=subject,
             body=draft_body,
-            body_format=body_format,
+            body_format=effective_body_format,
+            plain_text_body=plain_text_body,
             to=to,
             cc=cc,
             bcc=bcc,

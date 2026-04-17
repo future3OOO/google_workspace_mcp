@@ -99,7 +99,7 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 |-----------|------|----------|---------|-------|
 | subject | string | yes | | |
 | body | string | yes | | |
-| body_format | string | no | "plain" | "plain" or "html" |
+| body_format | string | no | auto | "plain" or "html"; omit to mirror Gmail draft composition, using HTML when a Gmail signature is available |
 | user_google_email | string | yes | | |
 | to | string | no | | Can be empty for drafts |
 | cc | string | no | | |
