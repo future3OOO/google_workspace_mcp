@@ -1188,10 +1188,7 @@ def _prepare_gmail_message(
             if disposition:
                 attachment_kwargs["disposition"] = disposition
 
-            if html_part is not None and (
-                disposition == "inline"
-                or (content_id and disposition is None and preserved_attachment)
-            ):
+            if html_part is not None and disposition == "inline":
                 html_part.add_related(
                     file_data,
                     maintype=main_type,
