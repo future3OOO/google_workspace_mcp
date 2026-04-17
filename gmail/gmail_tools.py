@@ -767,7 +767,7 @@ def _extract_preserved_attachments(
             # Drafts from external clients may have unknown charsets or broken
             # content-transfer-encoding; skip unscannable HTML parts.
             continue
-        for match in re.findall(r"cid:([^\"' >]+)", html_text):
+        for match in re.findall(r"cid:([^\"' >]+)", html_text, re.IGNORECASE):
             referenced_cids.add(f"<{match}>")
 
     def _visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
@@ -799,13 +799,15 @@ def _extract_preserved_attachments(
         if not (filename or disposition in {"attachment", "inline"} or content_id):
             return
 
-        # A bare Content-ID on a text/plain or text/html body part does not
-        # make it an attachment; rebuilding it as one turns the draft body
-        # into a visible attachment on update.
+        # A text/plain or text/html body part with a Content-ID but no
+        # filename is the message body, not an attachment.  Some clients
+        # mark these parts ``Content-Disposition: inline`` inside
+        # ``multipart/related``; only an explicit ``attachment``
+        # disposition should override this heuristic.
         if (
             content_id
             and not filename
-            and disposition not in {"attachment", "inline"}
+            and disposition != "attachment"
             and part_type in {"text/plain", "text/html"}
         ):
             return
@@ -1225,7 +1227,7 @@ def _prepare_gmail_message(
             if disposition:
                 attachment_kwargs["disposition"] = disposition
 
-            if html_part is not None and disposition == "inline":
+            if html_part is not None and disposition == "inline" and content_id:
                 html_part.add_related(
                     file_data,
                     maintype=main_type,
