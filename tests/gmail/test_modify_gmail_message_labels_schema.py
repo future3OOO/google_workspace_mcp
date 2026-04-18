@@ -1,6 +1,11 @@
+import inspect
+
+from auth.scopes import GMAIL_COMPOSE_SCOPE
 from core.server import server
 from core.tool_registry import get_tool_components
+from pydantic import TypeAdapter
 import gmail.gmail_tools  # noqa: F401
+from gmail.gmail_tools import update_gmail_draft
 
 
 def test_modify_gmail_message_labels_optional_arrays_publish_array_type():
@@ -23,3 +28,59 @@ def test_batch_modify_gmail_message_labels_optional_arrays_publish_array_type():
         assert field_schema["type"] == "array"
         assert field_schema["items"] == {"type": "string"}
         assert field_schema["default"] is None
+
+
+def test_gmail_draft_lifecycle_tools_require_draft_id_for_mutation():
+    components = get_tool_components(server)
+
+    for tool_name in ("update_gmail_draft", "delete_gmail_draft"):
+        schema = components[tool_name].parameters
+        assert "draft_id" in schema["required"]
+        assert schema["properties"]["draft_id"]["type"] == "string"
+
+
+def test_gmail_draft_lifecycle_tools_use_compose_scope_not_send_scope():
+    components = get_tool_components(server)
+
+    for tool_name in (
+        "draft_gmail_message",
+        "update_gmail_draft",
+        "delete_gmail_draft",
+    ):
+        assert components[tool_name].fn._required_google_scopes == [GMAIL_COMPOSE_SCOPE]
+
+
+def test_update_gmail_draft_attachments_accept_json_encoded_array():
+    fn = (
+        update_gmail_draft.fn
+        if hasattr(update_gmail_draft, "fn")
+        else update_gmail_draft
+    )
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+
+    annotation = inspect.signature(fn).parameters["attachments"].annotation
+    adapter = TypeAdapter(annotation)
+
+    assert adapter.validate_python(
+        '[{"filename": "doc.txt", "content": "aGVsbG8=", "mime_type": "text/plain"}]'
+    ) == [{"filename": "doc.txt", "content": "aGVsbG8=", "mime_type": "text/plain"}]
+
+
+def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
+    components = get_tool_components(server)
+    properties = components["update_gmail_draft"].parameters["properties"]
+
+    assert properties["body_format"]["default"] is None
+    assert "Omit to preserve" in properties["body_format"]["description"]
+    assert "empty string clears" not in properties["body_format"]["description"]
+
+    for field in ("to", "cc", "bcc", "from_email", "thread_id", "in_reply_to", "references"):
+        assert "Omit to preserve" in properties[field]["description"]
+        assert "empty string clears" in properties[field]["description"]
+
+    attachments_description = properties["attachments"]["description"]
+    assert "Omit to preserve" in attachments_description
+    assert "empty list clears" in attachments_description
+    assert "replaces" in attachments_description
+    assert "'url'" in attachments_description
