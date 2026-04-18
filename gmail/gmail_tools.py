@@ -649,13 +649,13 @@ def _derive_reply_headers(
     if not thread_message_ids:
         return derived_in_reply_to, derived_references
 
-    if not derived_in_reply_to:
+    if derived_in_reply_to is None:
         reference_chain = _parse_message_id_chain(derived_references)
         derived_in_reply_to = (
             reference_chain[-1] if reference_chain else thread_message_ids[-1]
         )
 
-    if not derived_references:
+    if derived_references is None:
         if derived_in_reply_to and derived_in_reply_to in thread_message_ids:
             reply_index = thread_message_ids.index(derived_in_reply_to)
             derived_references = " ".join(thread_message_ids[: reply_index + 1])
@@ -749,63 +749,6 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
     return context.get("message_ids", [])
 
 
-_PRESERVED_ATTACHMENT_SENTINEL = object()
-
-
-def _extract_preserved_attachments(
-    parsed_message: EmailMessage,
-) -> List[dict[str, Any]]:
-    """Extract attachment-like MIME parts that should survive draft updates."""
-    preserved_attachments: List[dict[str, Any]] = []
-
-    def _visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
-        disposition = part.get_content_disposition()
-        content_id = part.get("Content-ID")
-        filename = part.get_filename()
-        part_type = part.get_content_type()
-
-        if part_type == "message/rfc822":
-            content_message = part.get_content()
-            content = (
-                content_message.as_bytes(policy=SMTP)
-                if hasattr(content_message, "as_bytes")
-                else None
-            )
-            if content is None:
-                return
-        elif part.is_multipart():
-            if not (filename or disposition in {"attachment", "inline"} or content_id):
-                for child in part.iter_parts():
-                    _visit(child, part_type)
-                return
-            content = part.as_bytes(policy=SMTP)
-        else:
-            content = part.get_payload(decode=True)
-            if content is None:
-                return
-
-        if not (filename or disposition in {"attachment", "inline"} or content_id):
-            return
-
-        preserved_attachments.append(
-            {
-                "filename": filename,
-                "content": base64.b64encode(content).decode("ascii"),
-                "mime_type": part_type or "application/octet-stream",
-                "disposition": (
-                    "inline"
-                    if content_id and parent_type == "multipart/related"
-                    else disposition
-                ),
-                "content_id": content_id,
-                "_preserved": _PRESERVED_ATTACHMENT_SENTINEL,
-            }
-        )
-
-    _visit(parsed_message)
-    return preserved_attachments
-
-
 def _build_draft_message(
     subject: str,
     body: str,
@@ -821,7 +764,7 @@ def _build_draft_message(
     reply_to: Optional[str] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, Optional[str], int, List[str]]:
-    """Build a draft message with draft-specific attachment preservation semantics."""
+    """Build a draft message with optional attachments."""
     reply_subject = subject
     if in_reply_to and not subject.lower().startswith("re:"):
         reply_subject = f"Re: {subject}"
@@ -862,10 +805,8 @@ def _build_draft_message(
         plain_body = _html_to_text(body).strip()
         message.set_content(plain_body)
         message.add_alternative(body, subtype="html")
-        html_part = message.get_body(preferencelist=("html",))
     else:
         message.set_content(body)
-        html_part = None
 
     for attachment in attachments or []:
         if attachment.get("error"):
@@ -877,11 +818,6 @@ def _build_draft_message(
         content_base64 = attachment.get("content")
         resolved_bytes = attachment.get("_resolved_bytes")
         mime_type = attachment.get("mime_type")
-        disposition = attachment.get("disposition")
-        content_id = attachment.get("content_id")
-        preserved_attachment = (
-            attachment.get("_preserved") is _PRESERVED_ATTACHMENT_SENTINEL
-        )
 
         try:
             if resolved_bytes is not None:
@@ -909,8 +845,8 @@ def _build_draft_message(
                     mime_type, _ = mimetypes.guess_type(str(path_obj))
                     if not mime_type:
                         mime_type = "application/octet-stream"
-            elif content_base64:
-                if not filename and not (preserved_attachment or content_id):
+            elif content_base64 is not None:
+                if not filename:
                     error = ValueError("missing filename for base64 attachment")
                     logger.warning(f"Skipping attachment: {error}")
                     attachment_errors.append(
@@ -949,31 +885,17 @@ def _build_draft_message(
                 else ("application", "octet-stream")
             )
 
-            if html_part is not None and disposition == "inline" and content_id:
-                html_part.add_related(
-                    file_data,
-                    maintype=main_type,
-                    subtype=sub_type,
-                    cid=content_id,
-                    filename=safe_filename,
-                    disposition="inline",
-                )
-            else:
-                attachment_kwargs = {
-                    "maintype": main_type,
-                    "subtype": sub_type,
-                }
-                if safe_filename is not None:
-                    attachment_kwargs["filename"] = safe_filename
-                if content_id:
-                    attachment_kwargs["cid"] = content_id
-                if disposition:
-                    attachment_kwargs["disposition"] = disposition
-                message.add_attachment(file_data, **attachment_kwargs)
+            attachment_kwargs = {
+                "maintype": main_type,
+                "subtype": sub_type,
+            }
+            if safe_filename is not None:
+                attachment_kwargs["filename"] = safe_filename
+            message.add_attachment(file_data, **attachment_kwargs)
 
             attached_count += 1
             logger.info(
-                f"Attached file: {safe_filename or content_id or file_path or 'attachment'} ({len(file_data)} bytes)"
+                f"Attached file: {safe_filename or file_path or 'attachment'} ({len(file_data)} bytes)"
             )
         except (binascii.Error, ValueError) as exc:
             logger.error(f"Failed to decode attachment {filename or file_path}: {exc}")
@@ -2493,9 +2415,9 @@ async def update_gmail_draft(
         Optional[DictList],
         Field(
             description=(
-                "Replacement attachments. Omit to preserve; empty list clears; "
-                "non-empty list replaces. Each: 'url', 'path', OR 'content' + 'filename'. "
-                "Optional 'mime_type'."
+                "Replacement attachments. Omit or pass an empty list for no attachments; "
+                "non-empty list replaces. Any invalid replacement attachment fails the update. "
+                "Each: 'url', 'path', OR 'content' + 'filename'. Optional 'mime_type'."
             )
         ),
     ] = None,
@@ -2508,7 +2430,7 @@ async def update_gmail_draft(
         Field(description="Include original message as quoted reply. Requires thread_id."),
     ] = False,
 ) -> str:
-    """Updates an existing Gmail draft while preserving omitted draft fields."""
+    """Updates an existing Gmail draft with replacement subject/body and optional headers."""
     logger.info(
         f"[update_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
     )
@@ -2517,7 +2439,7 @@ async def update_gmail_draft(
     if not draft_id:
         raise UserInputError("draft_id is required.")
 
-    preserve_attachments = attachments is None
+    attachment_replacement_requested = attachments is not None
     thread_id_was_provided = thread_id is not None
     in_reply_to_was_provided = in_reply_to is not None
     references_was_provided = references is not None
@@ -2597,9 +2519,6 @@ async def update_gmail_draft(
             if parsed_message.get_body(preferencelist=("html",)) is not None
             else "plain"
         )
-    if preserve_attachments:
-        attachments = _extract_preserved_attachments(parsed_message)
-
     resolved_attachments = await _resolve_url_attachments(attachments)
 
     (
@@ -2627,7 +2546,7 @@ async def update_gmail_draft(
         reply_to=reply_to,
     )
 
-    if not preserve_attachments and attachment_errors:
+    if attachment_replacement_requested and attachment_errors:
         details = f" Details: {'; '.join(attachment_errors)}"
         raise UserInputError(
             "Attachment replacement failed. Verify each attachment path/content and retry."
