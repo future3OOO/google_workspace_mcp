@@ -706,6 +706,51 @@ def test_attach_attachments_to_message_rejects_oversize_non_url_attachments(
     assert list(message.iter_attachments()) == []
 
 
+def test_attach_attachments_to_message_reports_early_skip_errors(tmp_path, monkeypatch):
+    monkeypatch.setattr(gmail_tools, "validate_file_path", lambda path: Path(path))
+
+    missing_message = EmailMessage(policy=SMTP)
+    missing_message.set_content("Body")
+    missing_path = tmp_path / "missing.txt"
+    attached_count, attachment_errors = gmail_tools._attach_attachments_to_message(
+        missing_message, [{"path": str(missing_path)}]
+    )
+    assert attached_count == 0
+    assert attachment_errors == [f"{missing_path}: File not found: {missing_path}"]
+
+    missing_filename_message = EmailMessage(policy=SMTP)
+    missing_filename_message.set_content("Body")
+    attached_count, attachment_errors = gmail_tools._attach_attachments_to_message(
+        missing_filename_message,
+        [{"content": base64.b64encode(b"hello").decode("ascii")}],
+    )
+    assert attached_count == 0
+    assert attachment_errors == [
+        "attachment: missing filename for base64 attachment"
+    ]
+
+    missing_payload_message = EmailMessage(policy=SMTP)
+    missing_payload_message.set_content("Body")
+    attached_count, attachment_errors = gmail_tools._attach_attachments_to_message(
+        missing_payload_message, [{}]
+    )
+    assert attached_count == 0
+    assert attachment_errors == ["attachment: missing path, content, and url"]
+
+
+def test_attach_attachments_to_message_rejects_malformed_base64():
+    message = EmailMessage(policy=SMTP)
+    message.set_content("Body")
+
+    attached_count, attachment_errors = gmail_tools._attach_attachments_to_message(
+        message, [{"filename": "bad.txt", "content": "aGVsbG8=@@@"}]
+    )
+
+    assert attached_count == 0
+    assert attachment_errors == ["bad.txt: Invalid base64 attachment content"]
+    assert list(message.iter_attachments()) == []
+
+
 @pytest.mark.asyncio
 async def test_resolve_url_attachments_fetches_external_url(monkeypatch):
     """External URLs should be fetched via streamed SSRF-safe download."""
@@ -971,6 +1016,7 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
     existing_message["Cc"] = "cc@example.com"
     existing_message["Bcc"] = "bcc@example.com"
     existing_message["From"] = "Existing Sender <alias@example.com>"
+    existing_message["Reply-To"] = "reply@example.com"
     existing_message["In-Reply-To"] = "<msg1@example.com>"
     existing_message["References"] = "<root@example.com> <msg1@example.com>"
     existing_message.set_content("Old body")
@@ -1017,6 +1063,7 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
     assert parsed["Cc"] == "cc@example.com"
     assert parsed["Bcc"] == "bcc@example.com"
     assert parsed["From"] == "Existing Sender <alias@example.com>"
+    assert parsed["Reply-To"] == "reply@example.com"
     assert parsed["In-Reply-To"] == "<msg1@example.com>"
     assert parsed["References"] == "<root@example.com> <msg1@example.com>"
     assert parsed.get_body(preferencelist=("plain",)).get_content().strip() == (

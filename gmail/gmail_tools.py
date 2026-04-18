@@ -1189,7 +1189,11 @@ def _attach_attachments_to_message(
             elif file_path:
                 path_obj = validate_file_path(file_path)
                 if not path_obj.exists():
-                    logger.error(f"File not found: {file_path}")
+                    error = FileNotFoundError(f"File not found: {file_path}")
+                    logger.error(str(error))
+                    attachment_errors.append(
+                        _format_attachment_error(file_path, filename, error)
+                    )
                     continue
 
                 file_data = _read_attachment_bytes(path_obj)
@@ -1203,10 +1207,18 @@ def _attach_attachments_to_message(
                         mime_type = "application/octet-stream"
             elif content_base64:
                 if not filename:
-                    logger.warning("Skipping attachment: missing filename")
+                    error = ValueError("missing filename for base64 attachment")
+                    logger.warning(f"Skipping attachment: {error}")
+                    attachment_errors.append(
+                        _format_attachment_error(file_path, filename, error)
+                    )
                     continue
 
-                file_data = base64.b64decode(content_base64)
+                normalized_content = "".join(content_base64.split())
+                try:
+                    file_data = base64.b64decode(normalized_content, validate=True)
+                except binascii.Error as exc:
+                    raise ValueError("Invalid base64 attachment content") from exc
                 if len(file_data) > MAX_EMAIL_ATTACHMENT_BYTES:
                     raise ValueError(
                         f"Attachment exceeds {MAX_EMAIL_ATTACHMENT_BYTES} bytes: {filename}"
@@ -1214,7 +1226,11 @@ def _attach_attachments_to_message(
                 if not mime_type:
                     mime_type = "application/octet-stream"
             else:
-                logger.warning("Skipping attachment: missing path, content, and url")
+                error = ValueError("missing path, content, and url")
+                logger.warning(f"Skipping attachment: {error}")
+                attachment_errors.append(
+                    _format_attachment_error(file_path, filename, error)
+                )
                 continue
 
             safe_filename = None
@@ -2678,7 +2694,15 @@ async def update_gmail_draft(
 
     existing_headers = {
         name: str(value) if (value := parsed_message.get(name)) else None
-        for name in ("To", "Cc", "Bcc", "From", "In-Reply-To", "References")
+        for name in (
+            "To",
+            "Cc",
+            "Bcc",
+            "From",
+            "Reply-To",
+            "In-Reply-To",
+            "References",
+        )
     }
     existing_from_name, existing_from_email = parseaddr(existing_headers["From"] or "")
 
@@ -2694,6 +2718,7 @@ async def update_gmail_draft(
         from_name = existing_from_name or None
     if preserve_thread_id:
         thread_id = message_data.get("threadId")
+    reply_to = existing_headers["Reply-To"] if preserve_from_email else None
     if preserve_in_reply_to:
         in_reply_to = existing_headers["In-Reply-To"] or ""
     if preserve_references:
@@ -2768,6 +2793,8 @@ async def update_gmail_draft(
         in_reply_to=in_reply_to,
         references=references,
     )
+    if reply_to:
+        updated_message["Reply-To"] = reply_to
 
     if attachments is None:
         _attach_preserved_parts(updated_message, preserved_top_level_parts)
