@@ -949,6 +949,49 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_drops_inline_related_parts_removed_from_html():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    existing_message.get_body(preferencelist=("html",)).add_related(
+        b"PNGDATA",
+        maintype="image",
+        subtype="png",
+        cid="<logo>",
+        filename="logo.png",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {"raw": _encode_raw_message(existing_message)}
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="<html><body><p>Updated body</p></body></html>",
+        body_format="html",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert [part for part in parsed.walk() if part.get("Content-ID") == "<logo>"] == []
+    assert list(parsed.iter_attachments()) == []
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_cid_attachment_as_regular_attachment():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
@@ -999,6 +1042,49 @@ async def test_update_gmail_draft_preserves_cid_attachment_as_regular_attachment
     assert attachments[0].get_filename() == "logo.png"
     assert attachments[0].get_content_disposition() == "attachment"
     assert attachments[0].get("Content-ID") == "<logo>"
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_rejects_partial_attachment_replacements(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("ALLOWED_FILE_DIRS", str(tmp_path))
+
+    mock_service = Mock()
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Old body")
+    existing_message.add_attachment(
+        b"old attachment",
+        maintype="text",
+        subtype="plain",
+        filename="old.txt",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {"raw": _encode_raw_message(existing_message)}
+    }
+
+    valid_path = tmp_path / "new.txt"
+    valid_path.write_text("new attachment", encoding="utf-8")
+    missing_path = tmp_path / "missing.txt"
+
+    with pytest.raises(UserInputError, match="Attachment replacement failed"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            to="recipient@example.com",
+            subject="Updated subject",
+            body="Updated body",
+            attachments=[
+                {"path": str(valid_path)},
+                {"path": str(missing_path)},
+            ],
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.update.called
 
 
 @pytest.mark.asyncio

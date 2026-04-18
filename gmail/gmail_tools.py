@@ -827,7 +827,9 @@ def _collect_preserved_attachment_parts(
         cloned = _clone_message_part(child)
         content_id = child.get("Content-ID")
 
-        if content_id and content_id in referenced_cids:
+        if content_id:
+            if content_id not in referenced_cids:
+                continue
             filename = cloned.get_filename()
             if cloned.get("Content-Disposition"):
                 del cloned["Content-Disposition"]
@@ -2692,12 +2694,10 @@ async def update_gmail_draft(
             updated_message, resolved_attachments
         )
         requested_attachment_count = len(attachments or [])
-        if requested_attachment_count > 0 and attached_count == 0:
-            details = (
-                f" Details: {'; '.join(attachment_errors)}" if attachment_errors else ""
-            )
+        if attachment_errors:
+            details = f" Details: {'; '.join(attachment_errors)}"
             raise UserInputError(
-                "No valid attachments were added. Verify each attachment path/content and retry."
+                "Attachment replacement failed. Verify each attachment path/content and retry."
                 f"{details}"
             )
 
