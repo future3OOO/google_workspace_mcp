@@ -75,29 +75,17 @@ def test_update_gmail_draft_attachments_accept_json_encoded_array():
     ) == [{"filename": "doc.txt", "content": "aGVsbG8=", "mime_type": "text/plain"}]
 
 
-def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
+def test_update_gmail_draft_schema_documents_replacement_contract():
     components = get_tool_components(server)
-    properties = components["update_gmail_draft"].parameters["properties"]
+    schema = components["update_gmail_draft"].parameters
+    properties = schema["properties"]
 
-    assert properties["body_format"]["default"] is None
-    assert "Omit to preserve" in properties["body_format"]["description"]
-    assert "empty string" not in properties["body_format"]["description"]
-
-    for field_name in (
-        "to",
-        "cc",
-        "bcc",
-        "from_name",
-        "from_email",
-        "thread_id",
-        "in_reply_to",
-        "references",
-    ):
-        description = properties[field_name]["description"]
-        assert "Omit to preserve" in description
-        assert "empty string" in description
+    assert "subject" in schema["required"]
+    assert "body" in schema["required"]
+    assert "Replacement" in properties["subject"]["description"]
+    assert "Replacement" in properties["body"]["description"]
 
     attachments_description = properties["attachments"]["description"]
-    assert "Omit to preserve" in attachments_description
-    assert "empty list" in attachments_description
+    assert "Omit or pass an empty list for no attachments" in attachments_description
+    assert "invalid replacement attachment fails" in attachments_description
     assert "replaces" in attachments_description
