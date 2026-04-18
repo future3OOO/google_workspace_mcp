@@ -132,7 +132,7 @@ Replace the subject/body of an existing draft while preserving omitted draft fie
 | thread_id | string | no | | Omit to preserve; empty string clears |
 | in_reply_to | string | no | | Omit to preserve; empty string clears |
 | references | string | no | | Omit to preserve; empty string clears |
-| attachments | array | no | | Omit to preserve existing attachments/inline parts; empty list clears |
+| attachments | array | no | | Omit to preserve existing attachments/inline parts; empty list clears; non-empty list replaces existing attachments |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original quoted content (requires thread_id) |
 

@@ -785,21 +785,43 @@ def _collect_preserved_attachment_parts(
     html_body: str,
 ) -> tuple[List[EmailMessage], List[EmailMessage]]:
     """Clone existing attachment MIME parts without flattening their structure."""
-    top_level_parts = [_clone_message_part(part) for part in parsed_message.iter_attachments()]
-
     html_part = parsed_message.get_body(preferencelist=("html",))
+    harvested_parts = list(parsed_message.iter_attachments())
     if html_part is None:
-        return [], top_level_parts
+        return [], [_clone_message_part(part) for part in harvested_parts]
 
-    parent = _find_parent_message(parsed_message, html_part)
-    if parent is None or parent.get_content_type() != "multipart/related":
-        return [], top_level_parts
+    related_parent = None
+    related_body_child: Optional[EmailMessage] = None
+    current_node: Optional[EmailMessage] = html_part
+    while current_node is not None:
+        parent = _find_parent_message(parsed_message, current_node)
+        if parent is None:
+            break
+        if parent.get_content_type() == "multipart/related":
+            related_parent = parent
+            related_body_child = current_node
+            break
+        current_node = parent
+
+    if related_parent is None or related_body_child is None:
+        return [], [_clone_message_part(part) for part in harvested_parts]
+
+    related_child_ids = {
+        id(child)
+        for child in related_parent.iter_parts()
+        if child is not related_body_child
+    }
+    top_level_parts = [
+        _clone_message_part(part)
+        for part in harvested_parts
+        if id(part) not in related_child_ids
+    ]
 
     referenced_cids = _extract_referenced_cids(html_body)
     inline_related_parts: List[EmailMessage] = []
 
-    for child in parent.iter_parts():
-        if child is html_part:
+    for child in related_parent.iter_parts():
+        if child is related_body_child:
             continue
 
         cloned = _clone_message_part(child)
@@ -1170,8 +1192,7 @@ def _attach_attachments_to_message(
                     logger.error(f"File not found: {file_path}")
                     continue
 
-                with open(path_obj, "rb") as f:
-                    file_data = f.read()
+                file_data = _read_attachment_bytes(path_obj)
 
                 if not filename:
                     filename = path_obj.name
@@ -1186,6 +1207,10 @@ def _attach_attachments_to_message(
                     continue
 
                 file_data = base64.b64decode(content_base64)
+                if len(file_data) > MAX_EMAIL_ATTACHMENT_BYTES:
+                    raise ValueError(
+                        f"Attachment exceeds {MAX_EMAIL_ATTACHMENT_BYTES} bytes: {filename}"
+                    )
                 if not mime_type:
                     mime_type = "application/octet-stream"
             else:
@@ -2393,7 +2418,7 @@ async def _build_draft_request_body(
     include_signature: bool,
     quote_original: bool,
 ) -> tuple[dict, int, int]:
-    """Build the Gmail draft request body shared by create and update."""
+    """Build the Gmail draft request body for draft creation."""
     if quote_original and not thread_id:
         raise UserInputError("quote_original requires thread_id.")
 
@@ -2572,10 +2597,10 @@ async def update_gmail_draft(
         Optional[DictList],
         Field(
             description=(
-                "Optional replacement attachments. Omit to preserve existing attachments; "
-                "pass an empty list to clear. Each can have: 'url' (including MCP "
-                "attachment URLs), 'path', OR 'content' + 'filename'. Optional "
-                "'mime_type'."
+                "Optional replacement attachments. Omit to preserve existing attachments/inline "
+                "parts; pass an empty list to clear; provide a non-empty list to replace "
+                "existing attachments. Each can have: 'url' (including MCP attachment URLs), "
+                "'path', OR 'content' + 'filename'. Optional 'mime_type'."
             )
         ),
     ] = None,
