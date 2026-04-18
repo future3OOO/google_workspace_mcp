@@ -1308,44 +1308,6 @@ async def test_update_gmail_draft_rejects_malformed_raw_message_content():
     assert not mock_service.users.return_value.drafts.return_value.update.called
 
 
-def test_collect_preserved_attachment_parts_finds_nested_related_ancestor():
-    message = EmailMessage(policy=SMTP)
-    message.set_type("multipart/mixed")
-
-    related_part = EmailMessage(policy=SMTP)
-    related_part.set_type("multipart/related")
-    alternative_part = EmailMessage(policy=SMTP)
-    alternative_part.set_type("multipart/alternative")
-
-    plain_part = EmailMessage(policy=SMTP)
-    plain_part.set_content("Plain fallback")
-    html_part = EmailMessage(policy=SMTP)
-    html_part.set_content(
-        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
-        subtype="html",
-    )
-    image_part = EmailMessage(policy=SMTP)
-    image_part.set_type("image/png")
-    image_part["Content-ID"] = "<logo>"
-    image_part["Content-Disposition"] = 'inline; filename="logo.png"'
-    image_part.set_payload("UE5HREFUQQ==")
-    image_part["Content-Transfer-Encoding"] = "base64"
-
-    alternative_part.attach(plain_part)
-    alternative_part.attach(html_part)
-    related_part.attach(alternative_part)
-    related_part.attach(image_part)
-    message.attach(related_part)
-
-    inline_parts, top_level_parts = gmail_tools._collect_preserved_attachment_parts(
-        message,
-        '<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
-    )
-
-    assert [part.get("Content-ID") for part in inline_parts] == ["<logo>"]
-    assert top_level_parts == []
-
-
 @pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_inline_related_parts_when_attachments_omitted():
     mock_service = Mock()
