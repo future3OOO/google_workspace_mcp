@@ -2718,7 +2718,7 @@ async def update_gmail_draft(
         from_name = existing_from_name or None
     if preserve_thread_id:
         thread_id = message_data.get("threadId")
-    reply_to = existing_headers["Reply-To"] if preserve_from_email else None
+    reply_to = existing_headers["Reply-To"]
     if preserve_in_reply_to:
         in_reply_to = existing_headers["In-Reply-To"] or ""
     if preserve_references:
