@@ -1020,7 +1020,59 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
-async def test_update_gmail_draft_rederives_reply_headers_when_thread_changes():
+async def test_update_gmail_draft_preserves_zero_byte_attachment_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Old body")
+    existing_message.add_attachment(
+        b"",
+        maintype="application",
+        subtype="octet-stream",
+        filename="empty.bin",
+    )
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    attachments = list(parsed.iter_attachments())
+
+    assert len(attachments) == 1
+    assert attachments[0].get_filename() == "empty.bin"
+    assert attachments[0].get_payload(decode=True) == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("updates", "expected_in_reply_to", "expected_references"),
+    [
+        ({}, "<new-msg@example.com>", "<new-root@example.com> <new-msg@example.com>"),
+        ({"in_reply_to": ""}, None, "<new-root@example.com> <new-msg@example.com>"),
+        ({"references": ""}, "<new-msg@example.com>", None),
+    ],
+)
+async def test_update_gmail_draft_rederives_reply_headers_when_thread_changes(
+    updates, expected_in_reply_to, expected_references
+):
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
     existing_message = EmailMessage(policy=SMTP)
@@ -1051,6 +1103,7 @@ async def test_update_gmail_draft_rederives_reply_headers_when_thread_changes():
         body="Updated body",
         thread_id="new-thread",
         include_signature=False,
+        **updates,
     )
 
     update_kwargs = (
@@ -1059,8 +1112,8 @@ async def test_update_gmail_draft_rederives_reply_headers_when_thread_changes():
     assert update_kwargs["body"]["message"]["threadId"] == "new-thread"
 
     parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
-    assert parsed["In-Reply-To"] == "<new-msg@example.com>"
-    assert parsed["References"] == "<new-root@example.com> <new-msg@example.com>"
+    assert parsed["In-Reply-To"] == expected_in_reply_to
+    assert parsed["References"] == expected_references
 
 
 @pytest.mark.asyncio

@@ -649,13 +649,13 @@ def _derive_reply_headers(
     if not thread_message_ids:
         return derived_in_reply_to, derived_references
 
-    if not derived_in_reply_to:
+    if derived_in_reply_to is None:
         reference_chain = _parse_message_id_chain(derived_references)
         derived_in_reply_to = (
             reference_chain[-1] if reference_chain else thread_message_ids[-1]
         )
 
-    if not derived_references:
+    if derived_references is None:
         if derived_in_reply_to and derived_in_reply_to in thread_message_ids:
             reply_index = thread_message_ids.index(derived_in_reply_to)
             derived_references = " ".join(thread_message_ids[: reply_index + 1])
@@ -909,7 +909,7 @@ def _build_draft_message(
                     mime_type, _ = mimetypes.guess_type(str(path_obj))
                     if not mime_type:
                         mime_type = "application/octet-stream"
-            elif content_base64:
+            elif content_base64 is not None:
                 if not filename and not (preserved_attachment or content_id):
                     error = ValueError("missing filename for base64 attachment")
                     logger.warning(f"Skipping attachment: {error}")
