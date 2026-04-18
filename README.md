@@ -471,7 +471,7 @@ Read-only mode provides secure, restricted access by:
 uv run main.py --permissions gmail:organize drive:readonly
 
 # Combine permissions with tier filtering
-uv run main.py --permissions gmail:drafts drive:full --tool-tier extended
+uv run main.py --permissions gmail:send drive:full --tool-tier core
 ```
 Granular permissions mode provides service-by-service scope control:
 - Format: `service:level` (one entry per service)
