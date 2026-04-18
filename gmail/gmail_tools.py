@@ -2368,83 +2368,24 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
-    from_email = (
-        None if from_email is not None and not from_email.strip() else from_email
-    )
-
-    if thread_id:
-        to = None if to is not None and not to.strip() else to
-        in_reply_to = (
-            None if in_reply_to is not None and not in_reply_to.strip() else in_reply_to
-        )
-        references = (
-            None if references is not None and not references.strip() else references
-        )
-
-    resolved_attachments = await _resolve_url_attachments(attachments)
-
-    (
-        draft_body,
-        attached_count,
-        requested_attachment_count,
-    ) = await _build_draft_request_body(
-        service=service,
-        user_google_email=user_google_email,
-        subject=subject,
-        body=body,
-        body_format=body_format,
-        to=to,
-        cc=cc,
-        bcc=bcc,
-        from_name=from_name,
-        from_email=user_google_email if from_email is None else from_email,
-        thread_id=thread_id,
-        in_reply_to=in_reply_to,
-        references=references,
-        attachments=resolved_attachments,
-        include_signature=include_signature,
-        quote_original=quote_original,
-    )
-
-    created_draft = await asyncio.to_thread(
-        service.users().drafts().create(userId="me", body=draft_body).execute
-    )
-    draft_id = created_draft.get("id")
-    attachment_info = _format_attachment_result(
-        attached_count, requested_attachment_count
-    )
-    return f"Draft created{attachment_info}! Draft ID: {draft_id}"
-
-
-async def _build_draft_request_body(
-    service,
-    user_google_email: str,
-    subject: str,
-    body: str,
-    body_format: Literal["plain", "html"],
-    to: Optional[str],
-    cc: Optional[str],
-    bcc: Optional[str],
-    from_name: Optional[str],
-    from_email: Optional[str],
-    thread_id: Optional[str],
-    in_reply_to: Optional[str],
-    references: Optional[str],
-    attachments: Optional[List[dict[str, Any]]],
-    include_signature: bool,
-    quote_original: bool,
-) -> tuple[dict, int, int]:
-    """Build the Gmail draft request body for draft creation."""
     if quote_original and not thread_id:
         raise UserInputError("quote_original requires thread_id.")
 
-    sender_email = from_email
-    signature_sender_email = sender_email or user_google_email
-    draft_body = body
+    if from_email is not None and not from_email.strip():
+        from_email = None
+    if thread_id:
+        if to is not None and not to.strip():
+            to = None
+        if in_reply_to is not None and not in_reply_to.strip():
+            in_reply_to = None
+        if references is not None and not references.strip():
+            references = None
+
+    sender_email = user_google_email if from_email is None else from_email
     signature_html = ""
     if include_signature:
         signature_html = await _get_send_as_signature_html(
-            service, from_email=signature_sender_email
+            service, from_email=sender_email
         )
 
     reply_context = None
@@ -2478,7 +2419,7 @@ async def _build_draft_request_body(
 
     if quote_original and target_reply:
         draft_body = _build_quoted_reply_body(
-            draft_body,
+            body,
             body_format,
             signature_html,
             {
@@ -2489,8 +2430,9 @@ async def _build_draft_request_body(
             },
         )
     else:
-        draft_body = _append_signature_to_body(draft_body, body_format, signature_html)
+        draft_body = _append_signature_to_body(body, body_format, signature_html)
 
+    resolved_attachments = await _resolve_url_attachments(attachments)
     raw_message, thread_id_final, attached_count, attachment_errors = (
         _prepare_gmail_message(
             subject=subject,
@@ -2504,7 +2446,7 @@ async def _build_draft_request_body(
             references=references,
             from_email=sender_email,
             from_name=from_name,
-            attachments=attachments,
+            attachments=resolved_attachments,
         )
     )
 
@@ -2518,11 +2460,22 @@ async def _build_draft_request_body(
             f"{details}"
         )
 
-    request_body = {"message": {"raw": raw_message}}
+    request_body: Dict[str, Any] = {"message": {"raw": raw_message}}
     if thread_id_final:
         request_body["message"]["threadId"] = thread_id_final
 
-    return request_body, attached_count, requested_attachment_count
+    created_draft = await asyncio.to_thread(
+        service.users().drafts().create(userId="me", body=request_body).execute
+    )
+    attachment_info = _format_attachment_result(
+        attached_count, requested_attachment_count
+    )
+    return (
+        f"Draft created{attachment_info}! Draft ID: {created_draft.get('id')}"
+    )
+
+
+_PRESERVE_DOC = "Omit to preserve; empty string clears."
 
 
 @server.tool()
@@ -2536,101 +2489,57 @@ async def update_gmail_draft(
     body: Annotated[str, Field(description="Replacement email body.")],
     body_format: Annotated[
         Optional[Literal["plain", "html"]],
-        Field(
-            description="Replacement body format. Omit to preserve the existing draft body format; use 'plain' for plaintext or 'html' for HTML content.",
-        ),
+        Field(description=f"Replacement body format ('plain' or 'html'). {_PRESERVE_DOC}"),
     ] = None,
     to: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional replacement recipient email address. Omit to preserve "
-                "existing recipients; pass an empty string to clear."
-            ),
-        ),
+        Field(description=f"Replacement recipient. {_PRESERVE_DOC}"),
     ] = None,
     cc: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional replacement CC email address. Omit to preserve existing "
-                "CC recipients; pass an empty string to clear."
-            ),
-        ),
+        Field(description=f"Replacement CC. {_PRESERVE_DOC}"),
     ] = None,
     bcc: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional replacement BCC email address. Omit to preserve existing "
-                "BCC recipients; pass an empty string to clear."
-            ),
-        ),
+        Field(description=f"Replacement BCC. {_PRESERVE_DOC}"),
     ] = None,
     from_name: Annotated[
         Optional[str],
-        Field(
-            description="Optional sender display name. Omit to preserve; pass an empty string to clear.",
-        ),
+        Field(description=f"Sender display name. {_PRESERVE_DOC}"),
     ] = None,
     from_email: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional 'Send As' alias email address. Omit to preserve the existing alias; "
-                "pass an empty string to clear. Must be configured in Gmail settings."
-            ),
-        ),
+        Field(description=f"'Send As' alias email address. {_PRESERVE_DOC}"),
     ] = None,
     thread_id: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional Gmail thread ID to keep the draft associated with. Omit to preserve "
-                "the existing thread association; pass an empty string to clear."
-            )
-        ),
+        Field(description=f"Gmail thread ID. {_PRESERVE_DOC}"),
     ] = None,
     in_reply_to: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional RFC Message-ID of the message being replied to. Omit to preserve the "
-                "existing value; pass an empty string to clear."
-            ),
-        ),
+        Field(description=f"RFC Message-ID of the message being replied to. {_PRESERVE_DOC}"),
     ] = None,
     references: Annotated[
         Optional[str],
-        Field(
-            description=(
-                "Optional chain of Message-IDs for proper threading. Omit to preserve the "
-                "existing value; pass an empty string to clear."
-            ),
-        ),
+        Field(description=f"Chain of Message-IDs for proper threading. {_PRESERVE_DOC}"),
     ] = None,
     attachments: Annotated[
         Optional[DictList],
         Field(
             description=(
-                "Optional replacement attachments. Omit to preserve existing attachments/inline "
-                "parts; pass an empty list to clear; provide a non-empty list to replace "
-                "existing attachments. Each can have: 'url' (including MCP attachment URLs), "
-                "'path', OR 'content' + 'filename'. Optional 'mime_type'."
+                "Replacement attachments. Omit to preserve; empty list clears; "
+                "non-empty list replaces. Each: 'url', 'path', OR 'content' + 'filename'. "
+                "Optional 'mime_type'."
             )
         ),
     ] = None,
     include_signature: Annotated[
         bool,
-        Field(
-            description="Whether to append the Gmail signature from Settings > Signature when available. Defaults to true.",
-        ),
+        Field(description="Append Gmail signature from Settings > Signature. Defaults to true."),
     ] = True,
     quote_original: Annotated[
         bool,
-        Field(
-            description="Whether to include the original message as a quoted reply. Requires thread_id. Defaults to false.",
-        ),
+        Field(description="Include original message as quoted reply. Requires thread_id."),
     ] = False,
 ) -> str:
     """Updates an existing Gmail draft while preserving omitted draft fields."""
@@ -2642,29 +2551,15 @@ async def update_gmail_draft(
     if not draft_id:
         raise UserInputError("draft_id is required.")
 
-    def _normalize_optional_update_str(value: Optional[str]) -> Optional[str]:
-        if value is None:
-            return None
-        stripped = value.strip()
-        return stripped if stripped else ""
+    def _clear_or_pass(v: Optional[str]) -> Optional[str]:
+        return "" if v is not None and not v.strip() else v
 
-    to = _normalize_optional_update_str(to)
-    cc = _normalize_optional_update_str(cc)
-    bcc = _normalize_optional_update_str(bcc)
-    from_name = _normalize_optional_update_str(from_name)
-    from_email = _normalize_optional_update_str(from_email)
-    thread_id = _normalize_optional_update_str(thread_id)
-    in_reply_to = _normalize_optional_update_str(in_reply_to)
-    references = _normalize_optional_update_str(references)
-
-    preserve_to = to is None
-    preserve_cc = cc is None
-    preserve_bcc = bcc is None
-    preserve_from_name = from_name is None
-    preserve_from_email = from_email is None
-    preserve_thread_id = thread_id is None
-    preserve_in_reply_to = in_reply_to is None
-    preserve_references = references is None
+    to, cc, bcc = _clear_or_pass(to), _clear_or_pass(cc), _clear_or_pass(bcc)
+    from_name = _clear_or_pass(from_name)
+    from_email = _clear_or_pass(from_email)
+    thread_id = _clear_or_pass(thread_id)
+    in_reply_to = _clear_or_pass(in_reply_to)
+    references = _clear_or_pass(references)
 
     existing_draft = await asyncio.to_thread(
         service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
@@ -2678,10 +2573,9 @@ async def update_gmail_draft(
         )
 
     try:
-        padded_raw_message = raw_message + "=" * (-len(raw_message) % 4)
         parsed_message = BytesParser(policy=policy.default).parsebytes(
             base64.b64decode(
-                padded_raw_message,
+                raw_message + "=" * (-len(raw_message) % 4),
                 altchars=b"-_",
                 validate=True,
             )
@@ -2694,35 +2588,27 @@ async def update_gmail_draft(
 
     existing_headers = {
         name: str(value) if (value := parsed_message.get(name)) else None
-        for name in (
-            "To",
-            "Cc",
-            "Bcc",
-            "From",
-            "Reply-To",
-            "In-Reply-To",
-            "References",
-        )
+        for name in ("To", "Cc", "Bcc", "From", "Reply-To", "In-Reply-To", "References")
     }
     existing_from_name, existing_from_email = parseaddr(existing_headers["From"] or "")
 
-    if preserve_to:
+    if to is None:
         to = existing_headers["To"] or ""
-    if preserve_cc:
+    if cc is None:
         cc = existing_headers["Cc"]
-    if preserve_bcc:
+    if bcc is None:
         bcc = existing_headers["Bcc"]
-    if preserve_from_email:
+    if from_email is None:
         from_email = existing_from_email or existing_headers["From"]
-    if preserve_from_name:
+    if from_name is None:
         from_name = existing_from_name or None
-    if preserve_thread_id:
+    if thread_id is None:
         thread_id = message_data.get("threadId")
-    reply_to = existing_headers["Reply-To"]
-    if preserve_in_reply_to:
+    if in_reply_to is None:
         in_reply_to = existing_headers["In-Reply-To"] or ""
-    if preserve_references:
+    if references is None:
         references = existing_headers["References"] or ""
+    reply_to = existing_headers["Reply-To"]
 
     if body_format is None:
         body_format = (

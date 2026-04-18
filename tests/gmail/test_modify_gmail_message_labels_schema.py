@@ -71,16 +71,14 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
     components = get_tool_components(server)
     properties = components["update_gmail_draft"].parameters["properties"]
 
-    body_format_description = properties["body_format"]["description"]
     assert properties["body_format"]["default"] is None
-    assert "Omit to preserve the existing draft body format" in body_format_description
-
-    to_description = properties["to"]["description"]
-    assert "Omit to preserve" in to_description
-    assert "empty string to clear" in to_description
+    for field in ("body_format", "to", "cc", "bcc", "from_email", "thread_id",
+                  "in_reply_to", "references"):
+        assert "Omit to preserve" in properties[field]["description"]
+        assert "empty string clears" in properties[field]["description"]
 
     attachments_description = properties["attachments"]["description"]
-    assert "Omit to preserve existing attachments" in attachments_description
-    assert "empty list to clear" in attachments_description
-    assert "replace existing attachments" in attachments_description
+    assert "Omit to preserve" in attachments_description
+    assert "empty list clears" in attachments_description
+    assert "replaces" in attachments_description
     assert "'url'" in attachments_description
