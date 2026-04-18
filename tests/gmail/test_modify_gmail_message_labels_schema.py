@@ -72,8 +72,10 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
     properties = components["update_gmail_draft"].parameters["properties"]
 
     assert properties["body_format"]["default"] is None
-    for field in ("body_format", "to", "cc", "bcc", "from_email", "thread_id",
-                  "in_reply_to", "references"):
+    assert "Omit to preserve" in properties["body_format"]["description"]
+    assert "empty string clears" not in properties["body_format"]["description"]
+
+    for field in ("to", "cc", "bcc", "from_email", "thread_id", "in_reply_to", "references"):
         assert "Omit to preserve" in properties[field]["description"]
         assert "empty string clears" in properties[field]["description"]
 

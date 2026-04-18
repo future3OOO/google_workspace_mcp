@@ -757,7 +757,7 @@ cp .env.oauth21 .env
 <details open>
 <summary><b>📎 Email Attachments</b> <sub><sup>← Send emails with files</sup></sub></summary>
 
-Both `send_gmail_message` and `draft_gmail_message` support attachments via two methods:
+`send_gmail_message`, `draft_gmail_message`, and `update_gmail_draft` support attachments via three methods:
 
 **Option 1: File Path** (local server only)
 ```python
@@ -774,7 +774,13 @@ attachments=[{
 }]
 ```
 
-**⚠️ Centrally Hosted Servers**: When the MCP server runs remotely (cloud, shared instance), it cannot access your local filesystem. Use **Option 2** with base64-encoded content. Your MCP client must encode files before sending.
+**Option 3: URL**
+```python
+attachments=[{"url": "https://example.com/report.pdf", "filename": "report.pdf"}]
+```
+Fetches the attachment from a URL. Optional `filename` and `mime_type` overrides.
+
+**⚠️ Centrally Hosted Servers**: When the MCP server runs remotely (cloud, shared instance), it cannot access your local filesystem. Use **Option 2** or **Option 3**. Your MCP client must encode files before sending or provide a fetchable URL.
 
 </details>
 

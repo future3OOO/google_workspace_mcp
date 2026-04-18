@@ -1112,13 +1112,15 @@ async def _resolve_url_attachments(
             continue
         if local is not None:
             data, local_filename, local_mime = local
-            resolved.append(
-                {
-                    "_resolved_bytes": data,
-                    "filename": filename or local_filename,
-                    "mime_type": mime_type or local_mime,
-                }
-            )
+            resolved_attachment = {
+                "_resolved_bytes": data,
+                "filename": filename or local_filename,
+                "mime_type": mime_type or local_mime,
+            }
+            for field in ("disposition", "content_id"):
+                if att.get(field):
+                    resolved_attachment[field] = att[field]
+            resolved.append(resolved_attachment)
             continue
 
         # External URL — SSRF-safe fetch.
@@ -1149,13 +1151,15 @@ async def _resolve_url_attachments(
             elif filename:
                 mime_type, _ = mimetypes.guess_type(filename)
 
-        resolved.append(
-            {
-                "_resolved_bytes": data,
-                "filename": filename,
-                "mime_type": mime_type,
-            }
-        )
+        resolved_attachment = {
+            "_resolved_bytes": data,
+            "filename": filename,
+            "mime_type": mime_type,
+        }
+        for field in ("disposition", "content_id"):
+            if att.get(field):
+                resolved_attachment[field] = att[field]
+        resolved.append(resolved_attachment)
 
     return resolved
 
@@ -2370,6 +2374,9 @@ async def draft_gmail_message(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
+    if thread_id is not None:
+        thread_id = thread_id.strip() or None
+
     if quote_original and not thread_id:
         raise UserInputError("quote_original requires thread_id.")
 
@@ -2491,7 +2498,9 @@ async def update_gmail_draft(
     body: Annotated[str, Field(description="Replacement email body.")],
     body_format: Annotated[
         Optional[Literal["plain", "html"]],
-        Field(description=f"Replacement body format ('plain' or 'html'). {_PRESERVE_DOC}"),
+        Field(
+            description="Replacement body format ('plain' or 'html'). Omit to preserve existing draft format."
+        ),
     ] = None,
     to: Annotated[
         Optional[str],

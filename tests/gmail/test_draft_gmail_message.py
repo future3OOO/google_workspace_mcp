@@ -554,6 +554,53 @@ async def test_draft_gmail_message_with_url_attachment(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_draft_gmail_message_preserves_inline_url_attachment_metadata(
+    monkeypatch,
+):
+    fake_response = _FakeStreamResponse(
+        200,
+        headers={"content-type": "image/png"},
+        chunks=[b"pngdata"],
+    )
+
+    monkeypatch.setattr(
+        gmail_tools, "ssrf_safe_stream", _mock_stream_response(fake_response)
+    )
+
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_inline"}
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to="recipient@example.com",
+        subject="Inline URL attachment test",
+        body='<html><body><img src="cid:logo"></body></html>',
+        body_format="html",
+        attachments=[
+            {
+                "url": "https://example.com/logo.png",
+                "filename": "logo.png",
+                "mime_type": "image/png",
+                "disposition": "inline",
+                "content_id": "<logo>",
+            }
+        ],
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+    inline_parts = [part for part in parsed.walk() if part.get("Content-ID") == "<logo>"]
+
+    assert len(inline_parts) == 1
+    assert inline_parts[0].get_content_disposition() == "inline"
+    assert list(parsed.iter_attachments()) == []
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_treats_blank_reply_fields_like_omission():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
@@ -592,6 +639,26 @@ async def test_draft_gmail_message_treats_blank_reply_fields_like_omission():
     assert parsed["To"] == "reply@example.com"
     assert parsed["In-Reply-To"] == "<msg2@example.com>"
     assert parsed["References"] == "<msg1@example.com> <msg2@example.com>"
+
+
+@pytest.mark.asyncio
+async def test_draft_gmail_message_rejects_whitespace_only_thread_id_for_quote_original():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="quote_original requires thread_id"):
+        await _unwrap(draft_gmail_message)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            to="recipient@example.com",
+            subject="Quote",
+            body="Reply body",
+            thread_id=" ",
+            quote_original=True,
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.threads.return_value.get.called
+    assert not mock_service.users.return_value.drafts.return_value.create.called
 
 
 @pytest.mark.asyncio
