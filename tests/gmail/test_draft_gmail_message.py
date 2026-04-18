@@ -4,6 +4,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.policy import SMTP
 import os
+from pathlib import Path
 import sys
 from unittest.mock import Mock
 from contextlib import asynccontextmanager
@@ -676,6 +677,35 @@ def test_try_read_local_attachment_checks_file_size_before_reading(
         _try_read_local_attachment(f"/attachments/{file_id}")
 
 
+@pytest.mark.parametrize("attachment_kind", ("path", "content"))
+def test_attach_attachments_to_message_rejects_oversize_non_url_attachments(
+    tmp_path, monkeypatch, attachment_kind
+):
+    monkeypatch.setattr(gmail_tools, "MAX_EMAIL_ATTACHMENT_BYTES", 5)
+    message = EmailMessage(policy=SMTP)
+    message.set_content("Body")
+
+    if attachment_kind == "path":
+        file_path = tmp_path / "big.txt"
+        file_path.write_bytes(b"0123456789")
+        monkeypatch.setattr(gmail_tools, "validate_file_path", lambda path: Path(path))
+        attachment = {"path": str(file_path)}
+    else:
+        attachment = {
+            "filename": "big.txt",
+            "content": base64.b64encode(b"0123456789").decode("ascii"),
+        }
+
+    attached_count, attachment_errors = gmail_tools._attach_attachments_to_message(
+        message, [attachment]
+    )
+
+    assert attached_count == 0
+    assert len(attachment_errors) == 1
+    assert "Attachment exceeds 5 bytes" in attachment_errors[0]
+    assert list(message.iter_attachments()) == []
+
+
 @pytest.mark.asyncio
 async def test_resolve_url_attachments_fetches_external_url(monkeypatch):
     """External URLs should be fetched via streamed SSRF-safe download."""
@@ -1276,6 +1306,72 @@ async def test_update_gmail_draft_rejects_malformed_raw_message_content():
         )
 
     assert not mock_service.users.return_value.drafts.return_value.update.called
+
+
+def test_collect_preserved_attachment_parts_avoids_duplicates_for_root_related_html():
+    message = EmailMessage(policy=SMTP)
+    message.set_type("multipart/related")
+
+    html_part = EmailMessage(policy=SMTP)
+    html_part.set_content(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    image_part = EmailMessage(policy=SMTP)
+    image_part.set_type("image/png")
+    image_part["Content-ID"] = "<logo>"
+    image_part["Content-Disposition"] = 'inline; filename="logo.png"'
+    image_part.set_payload("UE5HREFUQQ==")
+    image_part["Content-Transfer-Encoding"] = "base64"
+
+    message.attach(html_part)
+    message.attach(image_part)
+
+    inline_parts, top_level_parts = gmail_tools._collect_preserved_attachment_parts(
+        message,
+        '<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
+    )
+
+    assert [part.get("Content-ID") for part in inline_parts] == ["<logo>"]
+    assert top_level_parts == []
+
+
+def test_collect_preserved_attachment_parts_finds_nested_related_ancestor():
+    message = EmailMessage(policy=SMTP)
+    message.set_type("multipart/mixed")
+
+    related_part = EmailMessage(policy=SMTP)
+    related_part.set_type("multipart/related")
+    alternative_part = EmailMessage(policy=SMTP)
+    alternative_part.set_type("multipart/alternative")
+
+    plain_part = EmailMessage(policy=SMTP)
+    plain_part.set_content("Plain fallback")
+    html_part = EmailMessage(policy=SMTP)
+    html_part.set_content(
+        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
+        subtype="html",
+    )
+    image_part = EmailMessage(policy=SMTP)
+    image_part.set_type("image/png")
+    image_part["Content-ID"] = "<logo>"
+    image_part["Content-Disposition"] = 'inline; filename="logo.png"'
+    image_part.set_payload("UE5HREFUQQ==")
+    image_part["Content-Transfer-Encoding"] = "base64"
+
+    alternative_part.attach(plain_part)
+    alternative_part.attach(html_part)
+    related_part.attach(alternative_part)
+    related_part.attach(image_part)
+    message.attach(related_part)
+
+    inline_parts, top_level_parts = gmail_tools._collect_preserved_attachment_parts(
+        message,
+        '<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
+    )
+
+    assert [part.get("Content-ID") for part in inline_parts] == ["<logo>"]
+    assert top_level_parts == []
 
 
 @pytest.mark.asyncio
