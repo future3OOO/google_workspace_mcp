@@ -861,6 +861,34 @@ async def test_draft_gmail_message_treats_blank_reply_fields_like_omission():
 
 
 @pytest.mark.asyncio
+async def test_draft_gmail_message_treats_whitespace_only_optional_fields_as_omitted_without_thread():
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_blank"}
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to=" ",
+        subject="Hello",
+        body="Body",
+        in_reply_to=" ",
+        references=" ",
+        include_signature=False,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+
+    assert "threadId" not in create_kwargs["body"]["message"]
+    assert parsed["Subject"] == "Hello"
+    assert parsed["To"] is None
+    assert parsed["In-Reply-To"] is None
+    assert parsed["References"] is None
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_fetches_thread_when_subject_needs_fallback():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
@@ -1152,6 +1180,43 @@ async def test_update_gmail_draft_clears_from_email_and_reply_headers_with_empty
 
     assert parsed["To"] is None
     assert parsed["From"] is None
+    assert parsed["In-Reply-To"] is None
+    assert parsed["References"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_clears_reply_headers_when_thread_id_is_cleared():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["In-Reply-To"] = "<old-msg@example.com>"
+    existing_message["References"] = "<old-root@example.com> <old-msg@example.com>"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "old-thread",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="Updated body",
+        thread_id="",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert "threadId" not in update_kwargs["body"]["message"]
     assert parsed["In-Reply-To"] is None
     assert parsed["References"] is None
 
