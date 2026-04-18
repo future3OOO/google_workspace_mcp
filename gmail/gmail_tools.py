@@ -2519,6 +2519,9 @@ async def update_gmail_draft(
         raise UserInputError("draft_id is required.")
 
     preserve_attachments = attachments is None
+    thread_id_was_provided = thread_id is not None
+    in_reply_to_was_provided = in_reply_to is not None
+    references_was_provided = references is not None
 
     def _normalize_optional_update_str(value: Optional[str]) -> Optional[str]:
         if value is None:
@@ -2574,13 +2577,22 @@ async def update_gmail_draft(
         from_email = existing_from_email or existing_headers["From"]
     if from_name is None:
         from_name = existing_from_name or None
-    thread_id = message_data.get("threadId") if thread_id is None else thread_id
+    existing_thread_id = message_data.get("threadId") or ""
+    thread_id = existing_thread_id if thread_id is None else thread_id
+    thread_changed = (
+        thread_id_was_provided and bool(thread_id) and thread_id != existing_thread_id
+    )
     in_reply_to = (
         (existing_headers["In-Reply-To"] or "") if in_reply_to is None else in_reply_to
     )
     references = (
         (existing_headers["References"] or "") if references is None else references
     )
+    if thread_changed:
+        if not in_reply_to_was_provided:
+            in_reply_to = None
+        if not references_was_provided:
+            references = None
     reply_to = existing_headers["Reply-To"]
     if body_format is None:
         body_format = (
