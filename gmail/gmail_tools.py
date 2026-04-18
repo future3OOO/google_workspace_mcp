@@ -773,10 +773,25 @@ def _find_parent_message(
     return None
 
 
+def _normalize_content_id(content_id: Optional[str]) -> Optional[str]:
+    """Normalize Content-ID values for reliable cid: matching."""
+    if content_id is None:
+        return None
+
+    normalized = content_id.strip()
+    if not normalized:
+        return None
+    if normalized.startswith("<") and normalized.endswith(">"):
+        return normalized
+    return f"<{normalized.strip('<>')}>"
+
+
 def _extract_referenced_cids(html_body: str) -> set[str]:
     """Return CID references present in an HTML body string."""
     return {
-        f"<{match}>" for match in re.findall(r"cid:([^\"' >]+)", html_body, re.IGNORECASE)
+        normalized
+        for match in re.findall(r"cid:([^\"' >]+)", html_body, re.IGNORECASE)
+        if (normalized := _normalize_content_id(match)) is not None
     }
 
 
@@ -825,7 +840,7 @@ def _collect_preserved_attachment_parts(
             continue
 
         cloned = _clone_message_part(child)
-        content_id = child.get("Content-ID")
+        content_id = _normalize_content_id(child.get("Content-ID"))
 
         if content_id:
             if content_id not in referenced_cids:
