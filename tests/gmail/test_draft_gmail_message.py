@@ -992,6 +992,50 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_rederives_reply_headers_when_thread_changes():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["In-Reply-To"] = "<old-msg@example.com>"
+    existing_message["References"] = "<old-root@example.com> <old-msg@example.com>"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "old-thread",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message("<new-root@example.com>", subject="New thread"),
+            _thread_message("<new-msg@example.com>", subject="New thread"),
+        ]
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="Updated body",
+        thread_id="new-thread",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    assert update_kwargs["body"]["message"]["threadId"] == "new-thread"
+
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    assert parsed["In-Reply-To"] == "<new-msg@example.com>"
+    assert parsed["References"] == "<new-root@example.com> <new-msg@example.com>"
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_reply_to_when_from_email_is_explicit():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
