@@ -1075,6 +1075,37 @@ async def test_update_gmail_draft_preserves_omitted_existing_draft_fields():
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_reply_to_when_from_email_is_explicit():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message["From"] = "user@example.com"
+    existing_message["Reply-To"] = "reply-target@example.com"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {"raw": _encode_raw_message(existing_message)},
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="Updated body",
+        from_email="user@example.com",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    assert parsed["Reply-To"] == "reply-target@example.com"
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_existing_html_body_format_when_omitted():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
