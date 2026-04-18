@@ -2284,14 +2284,13 @@ async def draft_gmail_message(
         None if from_email is not None and not from_email.strip() else from_email
     )
 
-    if thread_id:
-        to = None if to is not None and not to.strip() else to
-        in_reply_to = (
-            None if in_reply_to is not None and not in_reply_to.strip() else in_reply_to
-        )
-        references = (
-            None if references is not None and not references.strip() else references
-        )
+    to = None if to is not None and not to.strip() else to
+    in_reply_to = (
+        None if in_reply_to is not None and not in_reply_to.strip() else in_reply_to
+    )
+    references = (
+        None if references is not None and not references.strip() else references
+    )
 
     resolved_attachments = await _resolve_url_attachments(attachments)
 
@@ -2579,9 +2578,7 @@ async def update_gmail_draft(
         from_name = existing_from_name or None
     existing_thread_id = message_data.get("threadId") or ""
     thread_id = existing_thread_id if thread_id is None else thread_id
-    thread_changed = (
-        thread_id_was_provided and bool(thread_id) and thread_id != existing_thread_id
-    )
+    thread_changed = thread_id_was_provided and thread_id != existing_thread_id
     in_reply_to = (
         (existing_headers["In-Reply-To"] or "") if in_reply_to is None else in_reply_to
     )
