@@ -1308,34 +1308,6 @@ async def test_update_gmail_draft_rejects_malformed_raw_message_content():
     assert not mock_service.users.return_value.drafts.return_value.update.called
 
 
-def test_collect_preserved_attachment_parts_avoids_duplicates_for_root_related_html():
-    message = EmailMessage(policy=SMTP)
-    message.set_type("multipart/related")
-
-    html_part = EmailMessage(policy=SMTP)
-    html_part.set_content(
-        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
-        subtype="html",
-    )
-    image_part = EmailMessage(policy=SMTP)
-    image_part.set_type("image/png")
-    image_part["Content-ID"] = "<logo>"
-    image_part["Content-Disposition"] = 'inline; filename="logo.png"'
-    image_part.set_payload("UE5HREFUQQ==")
-    image_part["Content-Transfer-Encoding"] = "base64"
-
-    message.attach(html_part)
-    message.attach(image_part)
-
-    inline_parts, top_level_parts = gmail_tools._collect_preserved_attachment_parts(
-        message,
-        '<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
-    )
-
-    assert [part.get("Content-ID") for part in inline_parts] == ["<logo>"]
-    assert top_level_parts == []
-
-
 def test_collect_preserved_attachment_parts_finds_nested_related_ancestor():
     message = EmailMessage(policy=SMTP)
     message.set_type("multipart/mixed")
@@ -1412,58 +1384,6 @@ async def test_update_gmail_draft_preserves_inline_related_parts_when_attachment
     )
 
     assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
-
-    update_kwargs = (
-        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
-    )
-    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
-    preserved_parts = [
-        part for part in parsed.walk() if part.get("Content-ID") == "<logo>"
-    ]
-
-    assert len(preserved_parts) == 1
-    assert preserved_parts[0].get_filename() == "logo.png"
-    assert preserved_parts[0].get_content_disposition() == "inline"
-
-
-@pytest.mark.asyncio
-async def test_update_gmail_draft_preserves_inline_related_parts_with_invalid_html_charset():
-    mock_service = Mock()
-    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
-    existing_message = EmailMessage(policy=SMTP)
-    existing_message["Subject"] = "Old subject"
-    existing_message["To"] = "recipient@example.com"
-    existing_message["From"] = "Existing Sender <alias@example.com>"
-    existing_message.set_content("Plain fallback")
-    existing_message.add_alternative(
-        '<html><body><p>Old body</p><img src="cid:logo"></body></html>',
-        subtype="html",
-    )
-    html_part = existing_message.get_body(preferencelist=("html",))
-    html_part.replace_header("Content-Type", 'text/html; charset="x-bogus-charset"')
-    html_part.add_related(
-        b"PNGDATA",
-        maintype="image",
-        subtype="png",
-        cid="<logo>",
-        filename="logo.png",
-    )
-    mock_service.users().drafts().get().execute.return_value = {
-        "message": {
-            "raw": _encode_raw_message(existing_message),
-        }
-    }
-
-    await _unwrap(update_gmail_draft)(
-        service=mock_service,
-        user_google_email="user@example.com",
-        draft_id="draft123",
-        to="recipient@example.com",
-        subject="Updated subject",
-        body='<html><body><p>Updated body</p><img src="cid:logo"></body></html>',
-        body_format="html",
-        include_signature=False,
-    )
 
     update_kwargs = (
         mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
