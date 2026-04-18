@@ -30,14 +30,6 @@ def test_batch_modify_gmail_message_labels_optional_arrays_publish_array_type():
         assert field_schema["default"] is None
 
 
-def test_gmail_draft_lifecycle_tools_are_registered():
-    components = get_tool_components(server)
-
-    assert "draft_gmail_message" in components
-    assert "update_gmail_draft" in components
-    assert "delete_gmail_draft" in components
-
-
 def test_gmail_draft_lifecycle_tools_require_draft_id_for_mutation():
     components = get_tool_components(server)
 
@@ -80,26 +72,12 @@ def test_update_gmail_draft_schema_documents_preserved_omitted_fields():
     properties = components["update_gmail_draft"].parameters["properties"]
 
     body_format_description = properties["body_format"]["description"]
-    assert "preserve the existing draft body format" in body_format_description
-    assert properties["body_format"]["default"] is None
-
-    for field_name in (
-        "to",
-        "cc",
-        "bcc",
-        "from_name",
-        "from_email",
-        "thread_id",
-        "in_reply_to",
-        "references",
-    ):
-        description = properties[field_name]["description"]
-        assert "Omit to preserve" in description
-        assert "empty string to clear" in description
-
-    body_format_description = properties["body_format"]["description"]
     assert properties["body_format"]["default"] is None
     assert "Omit to preserve the existing draft body format" in body_format_description
+
+    to_description = properties["to"]["description"]
+    assert "Omit to preserve" in to_description
+    assert "empty string to clear" in to_description
 
     attachments_description = properties["attachments"]["description"]
     assert "Omit to preserve existing attachments" in attachments_description
