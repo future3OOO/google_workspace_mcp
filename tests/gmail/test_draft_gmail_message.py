@@ -1311,6 +1311,7 @@ async def test_update_gmail_draft_clears_reply_headers_when_thread_id_is_cleared
     parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
 
     assert "threadId" not in update_kwargs["body"]["message"]
+    assert parsed["To"] == "recipient@example.com"
     assert parsed["In-Reply-To"] is None
     assert parsed["References"] is None
 
