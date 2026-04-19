@@ -4,7 +4,7 @@ MCP tools for Gmail message search, sending, drafting, labels, and filters. All 
 
 ## Contents
 - Search & Read: search_gmail_messages, get_gmail_message_content, get_gmail_messages_content_batch, get_gmail_thread_content, get_gmail_threads_content_batch, get_gmail_attachment_content
-- Send & Draft: send_gmail_message, draft_gmail_message
+- Send & Draft: send_gmail_message, draft_gmail_message, update_gmail_draft, delete_gmail_draft
 - Label Management: list_gmail_labels, manage_gmail_label, modify_gmail_message_labels, batch_modify_gmail_message_labels
 - Filter Management: list_gmail_filters, manage_gmail_filter
 - Tips
@@ -112,6 +112,36 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+
+### update_gmail_draft
+Update an existing draft by replacing subject/body and optional headers. Omitted attachments are preserved; invalid replacement attachments, including URL fetch failures, fail the update.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| draft_id | string | yes | | Draft to update |
+| subject | string | yes | | Replacement subject |
+| body | string | yes | | Replacement body |
+| body_format | string | no | null | Omit to preserve existing draft format |
+| user_google_email | string | yes | | |
+| to | string | no | null | Omit to preserve; empty string clears |
+| cc | string | no | null | Omit to preserve; empty string clears |
+| bcc | string | no | null | Omit to preserve; empty string clears |
+| from_name | string | no | null | Omit to preserve; empty string clears |
+| from_email | string | no | null | Omit to preserve; empty string clears |
+| thread_id | string | no | null | Omit to preserve; empty string clears |
+| in_reply_to | string | no | null | Omit to preserve; empty string clears |
+| references | string | no | null | Omit to preserve; empty string clears |
+| attachments | array | no | null | Omit to preserve; empty list clears; non-empty list replaces. Each item may use `url`, `path`, or `content` + `filename`; URL attachments are fetched through the same safe download path and Gmail size limit as send/draft |
+| include_signature | boolean | no | true | Append Gmail signature if available |
+| quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+
+### delete_gmail_draft
+Delete an existing draft.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| draft_id | string | yes | | Draft to delete |
+| user_google_email | string | yes | | |
 
 ---
 
