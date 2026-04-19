@@ -114,7 +114,7 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
 
 ### update_gmail_draft
-Update an existing draft by replacing subject/body and optional headers. Attachments are included only when provided; invalid replacement attachments fail the update.
+Update an existing draft by replacing subject/body and optional headers. Omitted attachments are preserved; invalid replacement attachments fail the update.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
@@ -131,7 +131,7 @@ Update an existing draft by replacing subject/body and optional headers. Attachm
 | thread_id | string | no | null | Omit to preserve; empty string clears |
 | in_reply_to | string | no | null | Omit to preserve; empty string clears |
 | references | string | no | null | Omit to preserve; empty string clears |
-| attachments | array | no | null | Omit or empty for no attachments; non-empty list replaces |
+| attachments | array | no | null | Omit to preserve; empty list clears; non-empty list replaces |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
 

@@ -75,7 +75,7 @@ def test_update_gmail_draft_attachments_accept_json_encoded_array():
     ) == [{"filename": "doc.txt", "content": "aGVsbG8=", "mime_type": "text/plain"}]
 
 
-def test_update_gmail_draft_schema_documents_replacement_contract():
+def test_update_gmail_draft_schema_documents_update_contract():
     components = get_tool_components(server)
     schema = components["update_gmail_draft"].parameters
     properties = schema["properties"]
@@ -86,6 +86,7 @@ def test_update_gmail_draft_schema_documents_replacement_contract():
     assert "Replacement" in properties["body"]["description"]
 
     attachments_description = properties["attachments"]["description"]
-    assert "Omit or pass an empty list for no attachments" in attachments_description
+    assert "Omit to preserve existing attachments" in attachments_description
+    assert "empty list clears" in attachments_description
     assert "invalid replacement attachment fails" in attachments_description
     assert "replaces" in attachments_description
