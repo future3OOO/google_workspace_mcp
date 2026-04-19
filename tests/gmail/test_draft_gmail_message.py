@@ -1119,6 +1119,42 @@ async def test_update_gmail_draft_recomputes_recipient_when_thread_changes(exist
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_missing_recipient_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["In-Reply-To"] = "<old-msg@example.com>"
+    existing_message["References"] = "<old-root@example.com> <old-msg@example.com>"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "thread123",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+
+    await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert parsed["To"] is None
+    assert parsed["In-Reply-To"] == "<old-msg@example.com>"
+    assert parsed["References"] == "<old-root@example.com> <old-msg@example.com>"
+    assert not mock_service.users.return_value.threads.return_value.get.called
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_reply_to_when_from_email_is_explicit():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
@@ -1603,6 +1639,7 @@ async def test_update_gmail_draft_preserves_multipart_attachment_when_omitted():
     assert attachments[0].get_content_type() == "multipart/alternative"
     assert attachments[0].is_multipart()
     assert attachments[0].get_filename() == "bundle.eml"
+    assert attachments[0].get_content_disposition() == "attachment"
     assert [part.get_content_type() for part in attachments[0].iter_parts()] == [
         "text/plain",
         "text/html",

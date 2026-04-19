@@ -2451,7 +2451,7 @@ async def update_gmail_draft(
     thread_changed = thread_id_was_provided and thread_id != existing_thread_id
 
     if to is None:
-        to = None if thread_changed and thread_id else existing_headers["To"]
+        to = None if thread_changed and thread_id else (existing_headers["To"] or "")
     cc = existing_headers["Cc"] if cc is None else cc
     bcc = existing_headers["Bcc"] if bcc is None else bcc
     from_email_was_provided = from_email is not None
