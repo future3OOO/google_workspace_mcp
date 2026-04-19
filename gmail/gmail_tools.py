@@ -976,11 +976,19 @@ def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[st
 
         if part_type == "message/rfc822":
             content_message = part.get_content()
-            content = (
-                content_message.as_bytes(policy=SMTP)
-                if hasattr(content_message, "as_bytes")
-                else part.as_bytes(policy=SMTP)
-            )
+            if isinstance(content_message, EmailMessage):
+                preserved_attachments.append(
+                    {
+                        "filename": filename,
+                        "mime_type": part_type,
+                        "disposition": disposition,
+                        "content_id": content_id,
+                        "_message_rfc822": content_message,
+                        "_allow_missing_filename": True,
+                    }
+                )
+                return
+            content = part.as_bytes(policy=SMTP)
         elif part.is_multipart():
             if filename or disposition in {"attachment", "inline"} or content_id:
                 content = part.as_bytes(policy=SMTP)
@@ -1084,11 +1092,37 @@ def _prepare_gmail_message(
         filename = attachment.get("filename")
         content_base64 = attachment.get("content")
         resolved_bytes = attachment.get("_resolved_bytes")
+        message_rfc822 = attachment.get("_message_rfc822")
         mime_type = attachment.get("mime_type")
         disposition = attachment.get("disposition")
         content_id = attachment.get("content_id")
 
         try:
+            if message_rfc822 is not None:
+                if not isinstance(message_rfc822, EmailMessage):
+                    raise ValueError("invalid message/rfc822 attachment content")
+
+                safe_filename = None
+                if filename:
+                    safe_filename = (
+                        filename.replace("\r", "").replace("\n", "").replace("\x00", "")
+                    ) or None
+
+                attachment_kwargs = {}
+                if safe_filename is not None:
+                    attachment_kwargs["filename"] = safe_filename
+                if content_id:
+                    attachment_kwargs["cid"] = content_id
+                if disposition:
+                    attachment_kwargs["disposition"] = disposition
+                message.add_attachment(message_rfc822, **attachment_kwargs)
+                attached_count += 1
+                logger.info(
+                    "Attached file: %s (%d bytes)",
+                    safe_filename or content_id or "attachment",
+                    len(message_rfc822.as_bytes(policy=SMTP)),
+                )
+                continue
             if resolved_bytes is not None:
                 file_data = resolved_bytes
                 if not filename:
@@ -2388,18 +2422,19 @@ async def update_gmail_draft(
         for name in ("To", "Cc", "Bcc", "From", "Reply-To", "In-Reply-To", "References")
     }
     existing_from_name, existing_from_email = parseaddr(existing_headers["From"] or "")
+    existing_thread_id = message_data.get("threadId") or ""
+    thread_id = existing_thread_id if thread_id is None else thread_id
+    thread_changed = thread_id_was_provided and thread_id != existing_thread_id
 
     if to is None:
-        to = existing_headers["To"] or ""
+        to = None if thread_changed else existing_headers["To"]
     cc = existing_headers["Cc"] if cc is None else cc
     bcc = existing_headers["Bcc"] if bcc is None else bcc
+    from_email_was_provided = from_email is not None
     if from_email is None:
         from_email = existing_from_email or existing_headers["From"]
     if from_name is None:
         from_name = existing_from_name or None
-    existing_thread_id = message_data.get("threadId") or ""
-    thread_id = existing_thread_id if thread_id is None else thread_id
-    thread_changed = thread_id_was_provided and thread_id != existing_thread_id
     in_reply_to = (
         (existing_headers["In-Reply-To"] or "") if in_reply_to is None else in_reply_to
     )
@@ -2412,6 +2447,9 @@ async def update_gmail_draft(
         if not references_was_provided:
             references = None
     reply_to = existing_headers["Reply-To"]
+    existing_sender = existing_from_email or existing_headers["From"] or ""
+    if from_email_was_provided and (not from_email or from_email != existing_sender):
+        reply_to = None
     if body_format is None:
         body_format = (
             "html"
@@ -2448,11 +2486,16 @@ async def update_gmail_draft(
         reply_to=reply_to,
     )
 
-    if attachment_replacement_requested and attachment_errors:
+    if attachment_errors:
         details = f" Details: {'; '.join(attachment_errors)}"
+        if attachment_replacement_requested:
+            raise UserInputError(
+                "Attachment replacement failed. Verify each attachment path/content and retry."
+                f"{details}"
+            )
         raise UserInputError(
-            "Attachment replacement failed. Verify each attachment path/content and retry."
-            f"{details}"
+            "Existing draft attachments could not be preserved. Retry with explicit "
+            f"attachments to replace them.{details}"
         )
 
     updated_draft = await asyncio.to_thread(
