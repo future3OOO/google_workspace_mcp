@@ -251,4 +251,4 @@ Create or delete a filter.
 ### Attachments
 - To find attachments, read the message with `get_gmail_message_content` -- attachment IDs are listed in the response.
 - Download with `get_gmail_attachment_content` using both the message_id and attachment_id.
-- When sending/drafting, attachments can be specified as file paths (auto-encoded) or pre-encoded base64 content (standard base64, not urlsafe).
+- When sending/drafting, attachments can be specified as file paths (auto-encoded), URLs, or pre-encoded base64 content (standard base64, not urlsafe).

@@ -973,6 +973,9 @@ def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[st
         content_id = part.get("Content-ID")
         filename = part.get_filename()
         part_type = part.get_content_type()
+        should_preserve_part = bool(
+            filename or content_id or disposition == "attachment"
+        )
 
         if part_type == "message/rfc822":
             content_message = part.get_content()
@@ -990,7 +993,7 @@ def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[st
                 return
             content = part.as_bytes(policy=SMTP)
         elif part.is_multipart():
-            if filename or disposition in {"attachment", "inline"} or content_id:
+            if should_preserve_part:
                 preserved_attachments.append(
                     {
                         "filename": filename,
@@ -1011,7 +1014,7 @@ def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[st
             if content is None:
                 return
 
-        if not (filename or disposition in {"attachment", "inline"} or content_id):
+        if not should_preserve_part:
             return
 
         preserved_attachments.append(
@@ -2224,6 +2227,7 @@ async def _build_draft_request_body(
     include_signature: bool,
     quote_original: bool,
     reply_to: Optional[str] = None,
+    require_thread_recipient: bool = False,
 ) -> tuple[dict, int, int, List[str]]:
     """Build the Gmail draft request body shared by create and update."""
     if quote_original and not thread_id:
@@ -2264,6 +2268,10 @@ async def _build_draft_request_body(
     target_reply = reply_context.get("target") if reply_context else None
     if thread_id and to is None and target_reply:
         to = target_reply.get("reply_to") or target_reply.get("from") or to
+    if require_thread_recipient and to is None:
+        raise UserInputError(
+            "Could not derive recipient from target thread. Provide to explicitly and retry."
+        )
     if thread_id and not subject.strip() and target_reply:
         subject = target_reply.get("subject") or subject
 
@@ -2397,6 +2405,7 @@ async def update_gmail_draft(
         raise UserInputError("draft_id is required.")
 
     attachment_replacement_requested = attachments is not None
+    to_was_provided = to is not None
     thread_id_was_provided = thread_id is not None
     in_reply_to_was_provided = in_reply_to is not None
     references_was_provided = references is not None
@@ -2508,6 +2517,9 @@ async def update_gmail_draft(
         include_signature=include_signature,
         quote_original=quote_original,
         reply_to=reply_to,
+        require_thread_recipient=bool(
+            thread_changed and thread_id and not to_was_provided
+        ),
     )
 
     if attachment_errors:

@@ -1119,6 +1119,39 @@ async def test_update_gmail_draft_recomputes_recipient_when_thread_changes(exist
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_requires_recipient_when_thread_move_lookup_fails():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "old-recipient@example.com"
+    existing_message.set_content("Old body")
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {
+            "threadId": "old-thread",
+            "raw": _encode_raw_message(existing_message),
+        }
+    }
+    mock_service.users().threads().get().execute.side_effect = RuntimeError(
+        "thread unavailable"
+    )
+    mock_service.users.return_value.drafts.return_value.update.reset_mock()
+
+    with pytest.raises(UserInputError, match="Could not derive recipient"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            subject="Updated subject",
+            body="Updated body",
+            thread_id="new-thread",
+            include_signature=False,
+        )
+
+    assert not mock_service.users.return_value.drafts.return_value.update.called
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_missing_recipient_when_omitted():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
@@ -1644,6 +1677,46 @@ async def test_update_gmail_draft_preserves_multipart_attachment_when_omitted():
         "text/plain",
         "text/html",
     ]
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_ignores_inline_body_part_without_attachment_identity():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Plain fallback")
+    existing_message.add_alternative("<p>Old body</p>", subtype="html")
+    existing_message.get_body(preferencelist=("html",))[
+        "Content-Disposition"
+    ] = "inline"
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {"raw": _encode_raw_message(existing_message)}
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="<p>Updated body</p>",
+        body_format="html",
+        include_signature=False,
+    )
+
+    assert result == "Draft updated! Draft ID: draft123"
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+
+    assert list(parsed.iter_attachments()) == []
+    assert parsed.get_body(preferencelist=("html",)).get_content().strip() == (
+        "<p>Updated body</p>"
+    )
 
 
 @pytest.mark.asyncio
