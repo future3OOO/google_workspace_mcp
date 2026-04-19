@@ -1561,6 +1561,55 @@ async def test_update_gmail_draft_preserves_message_rfc822_attachment_when_omitt
 
 
 @pytest.mark.asyncio
+async def test_update_gmail_draft_preserves_multipart_attachment_when_omitted():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    existing_message = EmailMessage(policy=SMTP)
+    existing_message["Subject"] = "Old subject"
+    existing_message["To"] = "recipient@example.com"
+    existing_message.set_content("Old body")
+
+    multipart_attachment = EmailMessage(policy=SMTP)
+    multipart_attachment.set_content("Nested plain")
+    multipart_attachment.add_alternative("<p>Nested html</p>", subtype="html")
+    multipart_attachment.add_header(
+        "Content-Disposition", "attachment", filename="bundle.eml"
+    )
+    existing_message.make_mixed()
+    existing_message.attach(multipart_attachment)
+    mock_service.users().drafts().get().execute.return_value = {
+        "message": {"raw": _encode_raw_message(existing_message)}
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id="draft123",
+        to="recipient@example.com",
+        subject="Updated subject",
+        body="Updated body",
+        include_signature=False,
+    )
+
+    assert "Draft updated with 1 attachment(s)! Draft ID: draft123" in result
+
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    parsed = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    attachments = list(parsed.iter_attachments())
+
+    assert len(attachments) == 1
+    assert attachments[0].get_content_type() == "multipart/alternative"
+    assert attachments[0].is_multipart()
+    assert attachments[0].get_filename() == "bundle.eml"
+    assert [part.get_content_type() for part in attachments[0].iter_parts()] == [
+        "text/plain",
+        "text/html",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_update_gmail_draft_preserves_inline_related_parts_when_attachments_omitted():
     mock_service = Mock()
     mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}

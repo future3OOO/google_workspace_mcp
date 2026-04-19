@@ -991,7 +991,17 @@ def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[st
             content = part.as_bytes(policy=SMTP)
         elif part.is_multipart():
             if filename or disposition in {"attachment", "inline"} or content_id:
-                content = part.as_bytes(policy=SMTP)
+                preserved_attachments.append(
+                    {
+                        "filename": filename,
+                        "mime_type": part_type,
+                        "disposition": disposition,
+                        "content_id": content_id,
+                        "_message_part": part,
+                        "_allow_missing_filename": True,
+                    }
+                )
+                return
             else:
                 for child in part.iter_parts():
                     visit(child, part_type)
@@ -1093,11 +1103,25 @@ def _prepare_gmail_message(
         content_base64 = attachment.get("content")
         resolved_bytes = attachment.get("_resolved_bytes")
         message_rfc822 = attachment.get("_message_rfc822")
+        message_part = attachment.get("_message_part")
         mime_type = attachment.get("mime_type")
         disposition = attachment.get("disposition")
         content_id = attachment.get("content_id")
 
         try:
+            if message_part is not None:
+                if not isinstance(message_part, EmailMessage):
+                    raise ValueError("invalid multipart attachment content")
+
+                message.make_mixed()
+                message.attach(message_part)
+                attached_count += 1
+                logger.info(
+                    "Attached file: %s (%d bytes)",
+                    filename or content_id or "attachment",
+                    len(message_part.as_bytes(policy=SMTP)),
+                )
+                continue
             if message_rfc822 is not None:
                 if not isinstance(message_rfc822, EmailMessage):
                     raise ValueError("invalid message/rfc822 attachment content")
