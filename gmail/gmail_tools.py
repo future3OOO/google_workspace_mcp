@@ -17,9 +17,11 @@ from typing import Annotated, Optional, List, Dict, Literal, Any
 from urllib.parse import unquote, urlparse, urlunsplit
 
 import httpx
+from email import policy
 from email.message import EmailMessage
+from email.parser import BytesParser
 from email.policy import SMTP
-from email.utils import formataddr
+from email.utils import formataddr, parseaddr
 
 from pydantic import Field
 from googleapiclient.errors import HttpError
@@ -647,13 +649,13 @@ def _derive_reply_headers(
     if not thread_message_ids:
         return derived_in_reply_to, derived_references
 
-    if not derived_in_reply_to:
+    if derived_in_reply_to is None:
         reference_chain = _parse_message_id_chain(derived_references)
         derived_in_reply_to = (
             reference_chain[-1] if reference_chain else thread_message_ids[-1]
         )
 
-    if not derived_references:
+    if derived_references is None:
         if derived_in_reply_to and derived_in_reply_to in thread_message_ids:
             reply_index = thread_message_ids.index(derived_in_reply_to)
             derived_references = " ".join(thread_message_ids[: reply_index + 1])
@@ -963,6 +965,77 @@ async def _resolve_url_attachments(
     return resolved
 
 
+def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[str, Any]]:
+    preserved_attachments: List[dict[str, Any]] = []
+
+    def visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
+        disposition = part.get_content_disposition()
+        content_id = part.get("Content-ID")
+        filename = part.get_filename()
+        part_type = part.get_content_type()
+        should_preserve_part = bool(
+            filename or content_id or disposition == "attachment"
+        )
+
+        if part_type == "message/rfc822":
+            content_message = part.get_content()
+            if isinstance(content_message, EmailMessage):
+                preserved_attachments.append(
+                    {
+                        "filename": filename,
+                        "mime_type": part_type,
+                        "disposition": disposition,
+                        "content_id": content_id,
+                        "_message_rfc822": content_message,
+                        "_allow_missing_filename": True,
+                    }
+                )
+                return
+            content = part.as_bytes(policy=SMTP)
+        elif part.is_multipart():
+            if should_preserve_part:
+                preserved_attachments.append(
+                    {
+                        "filename": filename,
+                        "mime_type": part_type,
+                        "disposition": disposition,
+                        "content_id": content_id,
+                        "_message_part": part,
+                        "_allow_missing_filename": True,
+                    }
+                )
+                return
+            else:
+                for child in part.iter_parts():
+                    visit(child, part_type)
+                return
+        else:
+            content = part.get_payload(decode=True)
+            if content is None:
+                return
+
+        if not should_preserve_part:
+            return
+
+        preserved_attachments.append(
+            {
+                "filename": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+                "mime_type": part_type or "application/octet-stream",
+                "disposition": (
+                    "inline"
+                    if content_id and parent_type == "multipart/related"
+                    else disposition
+                ),
+                "content_id": content_id,
+                "_allow_missing_filename": True,
+            }
+        )
+
+    visit(parsed_message)
+    return preserved_attachments
+
+
 def _prepare_gmail_message(
     subject: str,
     body: str,
@@ -975,35 +1048,14 @@ def _prepare_gmail_message(
     body_format: Literal["plain", "html"] = "plain",
     from_email: Optional[str] = None,
     from_name: Optional[str] = None,
-    attachments: Optional[List[Dict[str, str]]] = None,
+    reply_to: Optional[str] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, Optional[str], int, List[str]]:
-    """
-    Prepare a Gmail message with threading and attachment support.
-
-    Args:
-        subject: Email subject
-        body: Email body content
-        to: Optional recipient email address
-        cc: Optional CC email address
-        bcc: Optional BCC email address
-        thread_id: Optional Gmail thread ID to reply within
-        in_reply_to: Optional Message-ID of the message being replied to
-        references: Optional chain of Message-IDs for proper threading
-        body_format: Content type for the email body ('plain' or 'html')
-        from_email: Optional sender email address
-        from_name: Optional sender display name (e.g., "Peter Hartree")
-        attachments: Optional list of attachments. Each can have 'path' (file path) OR 'content' (base64) + 'filename'
-
-    Returns:
-        Tuple of (raw_message, thread_id, attached_count, attachment_errors)
-        where raw_message is base64 encoded.
-    """
-    # Handle reply subject formatting
+    """Prepare a Gmail message with threading and attachment support."""
     reply_subject = subject
     if in_reply_to and not subject.lower().startswith("re:"):
         reply_subject = f"Re: {subject}"
 
-    # Prepare the email
     normalized_format = body_format.lower()
     if normalized_format not in {"plain", "html"}:
         raise ValueError("body_format must be either 'plain' or 'html'.")
@@ -1011,13 +1063,10 @@ def _prepare_gmail_message(
     attached_count = 0
     attachment_errors: List[str] = []
     message = EmailMessage(policy=SMTP)
-
     message["Subject"] = reply_subject
 
-    # Add sender if provided
     if from_email:
         if from_name:
-            # Sanitize from_name to prevent header injection
             safe_name = (
                 from_name.replace("\r", "").replace("\n", "").replace("\x00", "")
             )
@@ -1025,29 +1074,27 @@ def _prepare_gmail_message(
         else:
             message["From"] = from_email
 
-    # Add recipients if provided
     if to:
         message["To"] = to
     if cc:
         message["Cc"] = cc
     if bcc:
         message["Bcc"] = bcc
-
-    # Add reply headers for threading
+    if reply_to:
+        message["Reply-To"] = reply_to
     if in_reply_to:
         message["In-Reply-To"] = in_reply_to
-
     if references:
         message["References"] = references
 
     if normalized_format == "html":
-        # Include a text/plain fallback so reply drafts and recipients don't
-        # depend on clients successfully parsing HTML-only bodies.
         plain_body = _html_to_text(body).strip()
         message.set_content(plain_body)
         message.add_alternative(body, subtype="html")
+        html_part = message.get_body(preferencelist=("html",))
     else:
         message.set_content(body)
+        html_part = None
 
     for attachment in attachments or []:
         if attachment.get("error"):
@@ -1058,11 +1105,52 @@ def _prepare_gmail_message(
         filename = attachment.get("filename")
         content_base64 = attachment.get("content")
         resolved_bytes = attachment.get("_resolved_bytes")
+        message_rfc822 = attachment.get("_message_rfc822")
+        message_part = attachment.get("_message_part")
         mime_type = attachment.get("mime_type")
+        disposition = attachment.get("disposition")
+        content_id = attachment.get("content_id")
 
         try:
+            if message_part is not None:
+                if not isinstance(message_part, EmailMessage):
+                    raise ValueError("invalid multipart attachment content")
+
+                message.make_mixed()
+                message.attach(message_part)
+                attached_count += 1
+                logger.info(
+                    "Attached file: %s (%d bytes)",
+                    filename or content_id or "attachment",
+                    len(message_part.as_bytes(policy=SMTP)),
+                )
+                continue
+            if message_rfc822 is not None:
+                if not isinstance(message_rfc822, EmailMessage):
+                    raise ValueError("invalid message/rfc822 attachment content")
+
+                safe_filename = None
+                if filename:
+                    safe_filename = (
+                        filename.replace("\r", "").replace("\n", "").replace("\x00", "")
+                    ) or None
+
+                attachment_kwargs = {}
+                if safe_filename is not None:
+                    attachment_kwargs["filename"] = safe_filename
+                if content_id:
+                    attachment_kwargs["cid"] = content_id
+                if disposition:
+                    attachment_kwargs["disposition"] = disposition
+                message.add_attachment(message_rfc822, **attachment_kwargs)
+                attached_count += 1
+                logger.info(
+                    "Attached file: %s (%d bytes)",
+                    safe_filename or content_id or "attachment",
+                    len(message_rfc822.as_bytes(policy=SMTP)),
+                )
+                continue
             if resolved_bytes is not None:
-                # Pre-resolved from a URL by _resolve_url_attachments.
                 file_data = resolved_bytes
                 if not filename:
                     filename = "attachment"
@@ -1071,63 +1159,97 @@ def _prepare_gmail_message(
             elif file_path:
                 path_obj = validate_file_path(file_path)
                 if not path_obj.exists():
-                    logger.error(f"File not found: {file_path}")
+                    error = FileNotFoundError(f"File not found: {file_path}")
+                    logger.error(str(error))
+                    attachment_errors.append(
+                        _format_attachment_error(file_path, filename, error)
+                    )
                     continue
 
-                with open(path_obj, "rb") as f:
-                    file_data = f.read()
-
+                file_data = _read_attachment_bytes(path_obj)
                 if not filename:
                     filename = path_obj.name
-
                 if not mime_type:
                     mime_type, _ = mimetypes.guess_type(str(path_obj))
                     if not mime_type:
                         mime_type = "application/octet-stream"
-            elif content_base64:
-                if not filename:
-                    logger.warning("Skipping attachment: missing filename")
+            elif content_base64 is not None:
+                if (
+                    not filename
+                    and not content_id
+                    and not attachment.get("_allow_missing_filename")
+                ):
+                    error = ValueError("missing filename for base64 attachment")
+                    logger.warning(f"Skipping attachment: {error}")
+                    attachment_errors.append(
+                        _format_attachment_error(file_path, filename, error)
+                    )
                     continue
 
-                file_data = base64.b64decode(content_base64)
+                normalized_content = "".join(content_base64.split())
+                try:
+                    file_data = base64.b64decode(normalized_content, validate=True)
+                except binascii.Error as exc:
+                    raise ValueError("Invalid base64 attachment content") from exc
+                if len(file_data) > MAX_EMAIL_ATTACHMENT_BYTES:
+                    raise ValueError(
+                        f"Attachment exceeds {MAX_EMAIL_ATTACHMENT_BYTES} bytes: {filename or 'attachment'}"
+                    )
                 if not mime_type:
                     mime_type = "application/octet-stream"
             else:
-                logger.warning("Skipping attachment: missing path, content, and url")
+                error = ValueError("missing path, content, and url")
+                logger.warning(f"Skipping attachment: {error}")
+                attachment_errors.append(
+                    _format_attachment_error(file_path, filename, error)
+                )
                 continue
 
-            safe_filename = (
-                (filename or "attachment")
-                .replace("\r", "")
-                .replace("\n", "")
-                .replace("\x00", "")
-            ) or "attachment"
+            safe_filename = None
+            if filename:
+                safe_filename = (
+                    filename.replace("\r", "").replace("\n", "").replace("\x00", "")
+                ) or None
 
             main_type, sub_type = (
                 mime_type.split("/", 1)
                 if mime_type and "/" in mime_type
                 else ("application", "octet-stream")
             )
-            message.add_attachment(
-                file_data,
-                maintype=main_type,
-                subtype=sub_type,
-                filename=safe_filename,
-            )
+
+            if html_part is not None and disposition == "inline" and content_id:
+                html_part.add_related(
+                    file_data,
+                    maintype=main_type,
+                    subtype=sub_type,
+                    cid=content_id,
+                    filename=safe_filename,
+                    disposition="inline",
+                )
+            else:
+                attachment_kwargs = {"maintype": main_type, "subtype": sub_type}
+                if safe_filename is not None:
+                    attachment_kwargs["filename"] = safe_filename
+                if content_id:
+                    attachment_kwargs["cid"] = content_id
+                if disposition:
+                    attachment_kwargs["disposition"] = disposition
+                message.add_attachment(file_data, **attachment_kwargs)
+
             attached_count += 1
-            logger.info(f"Attached file: {safe_filename} ({len(file_data)} bytes)")
-        except (binascii.Error, ValueError) as e:
-            logger.error(f"Failed to decode attachment {filename or file_path}: {e}")
-            attachment_errors.append(_format_attachment_error(file_path, filename, e))
+            logger.info(
+                f"Attached file: {safe_filename or content_id or file_path or 'attachment'} ({len(file_data)} bytes)"
+            )
+        except (binascii.Error, ValueError) as exc:
+            logger.error(f"Failed to decode attachment {filename or file_path}: {exc}")
+            attachment_errors.append(_format_attachment_error(file_path, filename, exc))
             continue
-        except Exception as e:
-            logger.error(f"Failed to attach {filename or file_path}: {e}")
-            attachment_errors.append(_format_attachment_error(file_path, filename, e))
+        except Exception as exc:
+            logger.error(f"Failed to attach {filename or file_path}: {exc}")
+            attachment_errors.append(_format_attachment_error(file_path, filename, exc))
             continue
 
-    # Encode message
     raw_message = base64.urlsafe_b64encode(message.as_bytes(policy=SMTP)).decode()
-
     return raw_message, thread_id, attached_count, attachment_errors
 
 
@@ -2031,108 +2153,103 @@ async def draft_gmail_message(
     """
     Creates a draft email in the user's Gmail account. Supports both new drafts and reply drafts with optional attachments.
     Supports Gmail's "Send As" feature to draft from configured alias addresses.
-
-    Args:
-        user_google_email (str): The user's Google email address. Required for authentication.
-        subject (str): Email subject.
-        body (str): Email body (plain text).
-        body_format (Literal['plain', 'html']): Email body format. Defaults to 'plain'.
-        to (Optional[str]): Optional recipient email address. Can be left empty for drafts.
-        cc (Optional[str]): Optional CC email address.
-        bcc (Optional[str]): Optional BCC email address.
-        from_name (Optional[str]): Optional sender display name. If provided, the From header will be formatted as 'Name <email>'.
-        from_email (Optional[str]): Optional 'Send As' alias email address. The alias must be
-            configured in Gmail settings (Settings > Accounts > Send mail as). If not provided,
-            the draft will be from the authenticated user's primary email address.
-        thread_id (Optional[str]): Optional Gmail thread ID to reply within. When provided, creates a reply draft.
-        in_reply_to (Optional[str]): Optional RFC Message-ID of the message being replied to (e.g., '<message123@gmail.com>').
-        references (Optional[str]): Optional chain of RFC Message-IDs for proper threading (e.g., '<msg1@gmail.com> <msg2@gmail.com>').
-        attachments (List[Dict[str, str]]): Optional list of attachments. Each dict can contain:
-            Option 1 - File path (auto-encodes):
-              - 'path' (required): File path to attach
-              - 'filename' (optional): Override filename
-              - 'mime_type' (optional): Override MIME type (auto-detected if not provided)
-            Option 2 - Base64 content:
-              - 'content' (required): Standard base64-encoded file content (not urlsafe)
-              - 'filename' (required): Name of the file
-              - 'mime_type' (optional): MIME type (defaults to 'application/octet-stream')
-        include_signature (bool): Whether to append Gmail signature HTML from send-as settings.
-            If unavailable (e.g., missing gmail.settings.basic scope), the draft is still created without signature.
-        quote_original (bool): Whether to include the original message as a quoted reply.
-            Requires thread_id to be provided. When enabled, fetches the original message
-            and appends it below the signature. Defaults to False.
-
-    Returns:
-        str: Confirmation message with the created draft's ID.
-
-    Examples:
-        # Create a new draft
-        draft_gmail_message(subject="Hello", body="Hi there!", to="user@example.com")
-
-        # Create a draft from a configured alias (Send As)
-        draft_gmail_message(
-            subject="Business Inquiry",
-            body="Hello from my business address...",
-            to="user@example.com",
-            from_email="business@mydomain.com"
-        )
-
-        # Create a plaintext draft with CC and BCC
-        draft_gmail_message(
-            subject="Project Update",
-            body="Here's the latest update...",
-            to="user@example.com",
-            cc="manager@example.com",
-            bcc="archive@example.com"
-        )
-
-        # Create a HTML draft with CC and BCC
-        draft_gmail_message(
-            subject="Project Update",
-            body="<strong>Hi there!</strong>",
-            body_format="html",
-            to="user@example.com",
-            cc="manager@example.com",
-            bcc="archive@example.com"
-        )
-
-        # Create a reply draft in plaintext
-        draft_gmail_message(
-            subject="Re: Meeting tomorrow",
-            body="Thanks for the update!",
-            to="user@example.com",
-            thread_id="thread_123",
-            in_reply_to="<message123@gmail.com>",
-            references="<original@gmail.com> <message123@gmail.com>"
-        )
-
-        # Create a reply draft in HTML
-        draft_gmail_message(
-            subject="Re: Meeting tomorrow",
-            body="<strong>Thanks for the update!</strong>",
-            body_format="html",
-            to="user@example.com",
-            thread_id="thread_123",
-            in_reply_to="<message123@gmail.com>",
-            references="<original@gmail.com> <message123@gmail.com>"
-        )
     """
     logger.info(
         f"[draft_gmail_message] Invoked. Email: '{user_google_email}', Subject: '{subject}'"
     )
 
-    # Prepare the email message
-    # Use from_email (Send As alias) if provided, otherwise default to authenticated user
-    sender_email = from_email or user_google_email
+    if thread_id is not None:
+        thread_id = thread_id.strip() or None
+
+    from_email = (
+        None if from_email is not None and not from_email.strip() else from_email
+    )
+
+    to = None if to is not None and not to.strip() else to
+    in_reply_to = (
+        None if in_reply_to is not None and not in_reply_to.strip() else in_reply_to
+    )
+    references = (
+        None if references is not None and not references.strip() else references
+    )
+
+    resolved_attachments = await _resolve_url_attachments(attachments)
+
+    (
+        draft_body,
+        attached_count,
+        requested_attachment_count,
+        _,
+    ) = await _build_draft_request_body(
+        service=service,
+        user_google_email=user_google_email,
+        subject=subject,
+        body=body,
+        body_format=body_format,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        from_name=from_name,
+        from_email=user_google_email if from_email is None else from_email,
+        thread_id=thread_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        attachments=resolved_attachments,
+        include_signature=include_signature,
+        quote_original=quote_original,
+    )
+
+    created_draft = await asyncio.to_thread(
+        service.users().drafts().create(userId="me", body=draft_body).execute
+    )
+    draft_id = created_draft.get("id")
+    attachment_info = _format_attachment_result(
+        attached_count, requested_attachment_count
+    )
+    return f"Draft created{attachment_info}! Draft ID: {draft_id}"
+
+
+async def _build_draft_request_body(
+    service,
+    user_google_email: str,
+    subject: str,
+    body: str,
+    body_format: Literal["plain", "html"],
+    to: Optional[str],
+    cc: Optional[str],
+    bcc: Optional[str],
+    from_name: Optional[str],
+    from_email: Optional[str],
+    thread_id: Optional[str],
+    in_reply_to: Optional[str],
+    references: Optional[str],
+    attachments: Optional[List[dict[str, Any]]],
+    include_signature: bool,
+    quote_original: bool,
+    reply_to: Optional[str] = None,
+    require_thread_recipient: bool = False,
+) -> tuple[dict, int, int, List[str]]:
+    """Build the Gmail draft request body shared by create and update."""
+    if quote_original and not thread_id:
+        raise UserInputError("quote_original requires thread_id.")
+
+    sender_email = from_email
+    signature_sender_email = sender_email or user_google_email
     draft_body = body
     signature_html = ""
     if include_signature:
         signature_html = await _get_send_as_signature_html(
-            service, from_email=sender_email
+            service, from_email=signature_sender_email
         )
 
     reply_context = None
-    if thread_id and (quote_original or not in_reply_to or not references or not to):
+    if thread_id and (
+        quote_original
+        or in_reply_to is None
+        or references is None
+        or to is None
+        or not subject.strip()
+    ):
         reply_context = await _fetch_thread_reply_context(
             service,
             thread_id,
@@ -2140,7 +2257,7 @@ async def draft_gmail_message(
             include_bodies=quote_original,
         )
 
-    if thread_id and (not in_reply_to or not references):
+    if thread_id and (in_reply_to is None or references is None):
         thread_message_ids = (
             reply_context.get("message_ids", []) if reply_context else []
         )
@@ -2149,8 +2266,12 @@ async def draft_gmail_message(
         )
 
     target_reply = reply_context.get("target") if reply_context else None
-    if thread_id and not to and target_reply:
+    if thread_id and to is None and target_reply:
         to = target_reply.get("reply_to") or target_reply.get("from") or to
+    if require_thread_recipient and to is None:
+        raise UserInputError(
+            "Could not derive recipient from target thread. Provide to explicitly and retry."
+        )
     if thread_id and not subject.strip() and target_reply:
         subject = target_reply.get("subject") or subject
 
@@ -2169,7 +2290,6 @@ async def draft_gmail_message(
     else:
         draft_body = _append_signature_to_body(draft_body, body_format, signature_html)
 
-    resolved_attachments = await _resolve_url_attachments(attachments)
     raw_message, thread_id_final, attached_count, attachment_errors = (
         _prepare_gmail_message(
             subject=subject,
@@ -2183,7 +2303,8 @@ async def draft_gmail_message(
             references=references,
             from_email=sender_email,
             from_name=from_name,
-            attachments=resolved_attachments,
+            reply_to=reply_to,
+            attachments=attachments,
         )
     )
 
@@ -2197,22 +2318,256 @@ async def draft_gmail_message(
             f"{details}"
         )
 
-    # Create a draft instead of sending
-    draft_body = {"message": {"raw": raw_message}}
-
-    # Associate with thread if provided
+    request_body = {"message": {"raw": raw_message}}
     if thread_id_final:
-        draft_body["message"]["threadId"] = thread_id_final
+        request_body["message"]["threadId"] = thread_id_final
 
-    # Create the draft
-    created_draft = await asyncio.to_thread(
-        service.users().drafts().create(userId="me", body=draft_body).execute
+    return request_body, attached_count, requested_attachment_count, attachment_errors
+
+
+_PRESERVE_DOC = "Omit to preserve; empty string clears."
+
+
+@server.tool()
+@handle_http_errors("update_gmail_draft", service_type="gmail")
+@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+async def update_gmail_draft(
+    service,
+    user_google_email: str,
+    draft_id: Annotated[str, Field(description="Gmail draft ID to update.")],
+    subject: Annotated[str, Field(description="Replacement email subject.")],
+    body: Annotated[str, Field(description="Replacement email body.")],
+    body_format: Annotated[
+        Optional[Literal["plain", "html"]],
+        Field(
+            description="Replacement body format ('plain' or 'html'). Omit to preserve existing draft format."
+        ),
+    ] = None,
+    to: Annotated[
+        Optional[str],
+        Field(description=f"Replacement recipient. {_PRESERVE_DOC}"),
+    ] = None,
+    cc: Annotated[
+        Optional[str],
+        Field(description=f"Replacement CC. {_PRESERVE_DOC}"),
+    ] = None,
+    bcc: Annotated[
+        Optional[str],
+        Field(description=f"Replacement BCC. {_PRESERVE_DOC}"),
+    ] = None,
+    from_name: Annotated[
+        Optional[str],
+        Field(description=f"Sender display name. {_PRESERVE_DOC}"),
+    ] = None,
+    from_email: Annotated[
+        Optional[str],
+        Field(description=f"'Send As' alias email address. {_PRESERVE_DOC}"),
+    ] = None,
+    thread_id: Annotated[
+        Optional[str],
+        Field(description=f"Gmail thread ID. {_PRESERVE_DOC}"),
+    ] = None,
+    in_reply_to: Annotated[
+        Optional[str],
+        Field(description=f"RFC Message-ID of the message being replied to. {_PRESERVE_DOC}"),
+    ] = None,
+    references: Annotated[
+        Optional[str],
+        Field(description=f"Chain of Message-IDs for proper threading. {_PRESERVE_DOC}"),
+    ] = None,
+    attachments: Annotated[
+        Optional[DictList],
+        Field(
+            description=(
+                "Replacement attachments. Omit to preserve existing attachments; "
+                "empty list clears; non-empty list replaces. Any invalid replacement "
+                "attachment fails the update. Each: 'url', 'path', OR 'content' + "
+                "'filename'. Optional 'mime_type'."
+            )
+        ),
+    ] = None,
+    include_signature: Annotated[
+        bool,
+        Field(description="Append Gmail signature from Settings > Signature. Defaults to true."),
+    ] = True,
+    quote_original: Annotated[
+        bool,
+        Field(description="Include original message as quoted reply. Requires thread_id."),
+    ] = False,
+) -> str:
+    """Updates an existing Gmail draft with replacement subject/body and optional headers."""
+    logger.info(
+        f"[update_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
     )
-    draft_id = created_draft.get("id")
+
+    draft_id = draft_id.strip()
+    if not draft_id:
+        raise UserInputError("draft_id is required.")
+
+    attachment_replacement_requested = attachments is not None
+    to_was_provided = to is not None
+    thread_id_was_provided = thread_id is not None
+    in_reply_to_was_provided = in_reply_to is not None
+    references_was_provided = references is not None
+
+    def _normalize_optional_update_str(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped if stripped else ""
+
+    to = _normalize_optional_update_str(to)
+    cc = _normalize_optional_update_str(cc)
+    bcc = _normalize_optional_update_str(bcc)
+    from_name = _normalize_optional_update_str(from_name)
+    from_email = _normalize_optional_update_str(from_email)
+    thread_id = _normalize_optional_update_str(thread_id)
+    in_reply_to = _normalize_optional_update_str(in_reply_to)
+    references = _normalize_optional_update_str(references)
+
+    existing_draft = await asyncio.to_thread(
+        service.users().drafts().get(userId="me", id=draft_id, format="raw").execute
+    )
+    message_data = existing_draft.get("message", {})
+    raw_message = message_data.get("raw")
+    if not raw_message:
+        raise UserInputError(
+            f"Failed to retrieve raw message content for draft '{draft_id}'. "
+            "The draft may have been deleted or the API returned an unexpected response."
+        )
+
+    try:
+        parsed_message = BytesParser(policy=policy.default).parsebytes(
+            base64.b64decode(
+                raw_message + "=" * (-len(raw_message) % 4),
+                altchars=b"-_",
+                validate=True,
+            )
+        )
+    except (binascii.Error, ValueError, TypeError) as exc:
+        raise UserInputError(
+            f"Failed to parse draft '{draft_id}' raw MIME content. "
+            "The draft response appears malformed."
+        ) from exc
+
+    existing_headers = {
+        name: str(value) if (value := parsed_message.get(name)) else None
+        for name in ("To", "Cc", "Bcc", "From", "Reply-To", "In-Reply-To", "References")
+    }
+    existing_from_name, existing_from_email = parseaddr(existing_headers["From"] or "")
+    existing_thread_id = message_data.get("threadId") or ""
+    thread_id = existing_thread_id if thread_id is None else thread_id
+    thread_changed = thread_id_was_provided and thread_id != existing_thread_id
+
+    if to is None:
+        to = None if thread_changed and thread_id else (existing_headers["To"] or "")
+    cc = existing_headers["Cc"] if cc is None else cc
+    bcc = existing_headers["Bcc"] if bcc is None else bcc
+    from_email_was_provided = from_email is not None
+    if from_email is None:
+        from_email = existing_from_email or existing_headers["From"]
+    if from_name is None:
+        from_name = existing_from_name or None
+    in_reply_to = (
+        (existing_headers["In-Reply-To"] or "") if in_reply_to is None else in_reply_to
+    )
+    references = (
+        (existing_headers["References"] or "") if references is None else references
+    )
+    if thread_changed:
+        if not in_reply_to_was_provided:
+            in_reply_to = None
+        if not references_was_provided:
+            references = None
+    reply_to = existing_headers["Reply-To"]
+    existing_sender = existing_from_email or existing_headers["From"] or ""
+    if from_email_was_provided and (not from_email or from_email != existing_sender):
+        reply_to = None
+    if body_format is None:
+        body_format = (
+            "html"
+            if parsed_message.get_body(preferencelist=("html",)) is not None
+            else "plain"
+        )
+    if attachments is None:
+        attachments = _extract_preserved_attachments(parsed_message)
+
+    resolved_attachments = await _resolve_url_attachments(attachments)
+
+    (
+        draft_body,
+        attached_count,
+        requested_attachment_count,
+        attachment_errors,
+    ) = await _build_draft_request_body(
+        service=service,
+        user_google_email=user_google_email,
+        subject=subject,
+        body=body,
+        body_format=body_format,
+        to=to,
+        cc=cc,
+        bcc=bcc,
+        from_name=from_name,
+        from_email=from_email,
+        thread_id=thread_id,
+        in_reply_to=in_reply_to,
+        references=references,
+        attachments=resolved_attachments,
+        include_signature=include_signature,
+        quote_original=quote_original,
+        reply_to=reply_to,
+        require_thread_recipient=bool(
+            thread_changed and thread_id and not to_was_provided
+        ),
+    )
+
+    if attachment_errors:
+        details = f" Details: {'; '.join(attachment_errors)}"
+        if attachment_replacement_requested:
+            raise UserInputError(
+                "Attachment replacement failed. Verify each attachment path/content and retry."
+                f"{details}"
+            )
+        raise UserInputError(
+            "Existing draft attachments could not be preserved. Retry with explicit "
+            f"attachments to replace them.{details}"
+        )
+
+    updated_draft = await asyncio.to_thread(
+        service.users()
+        .drafts()
+        .update(userId="me", id=draft_id, body=draft_body)
+        .execute
+    )
+    updated_draft_id = updated_draft.get("id") or draft_id
     attachment_info = _format_attachment_result(
         attached_count, requested_attachment_count
     )
-    return f"Draft created{attachment_info}! Draft ID: {draft_id}"
+    return f"Draft updated{attachment_info}! Draft ID: {updated_draft_id}"
+
+
+@server.tool()
+@handle_http_errors("delete_gmail_draft", service_type="gmail")
+@require_google_service("gmail", GMAIL_COMPOSE_SCOPE)
+async def delete_gmail_draft(
+    service,
+    user_google_email: str,
+    draft_id: Annotated[str, Field(description="Gmail draft ID to delete.")],
+) -> str:
+    """Deletes an existing Gmail draft by draft ID."""
+    logger.info(
+        f"[delete_gmail_draft] Invoked. Email: '{user_google_email}', Draft ID: '{draft_id}'"
+    )
+
+    draft_id = draft_id.strip()
+    if not draft_id:
+        raise UserInputError("draft_id is required.")
+
+    await asyncio.to_thread(
+        service.users().drafts().delete(userId="me", id=draft_id).execute
+    )
+    return f"Draft deleted! Draft ID: {draft_id}"
 
 
 def _format_thread_content(
