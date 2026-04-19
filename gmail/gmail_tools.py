@@ -749,167 +749,6 @@ async def _fetch_thread_message_ids(service, thread_id: str) -> List[str]:
     return context.get("message_ids", [])
 
 
-def _build_draft_message(
-    subject: str,
-    body: str,
-    to: Optional[str] = None,
-    cc: Optional[str] = None,
-    bcc: Optional[str] = None,
-    thread_id: Optional[str] = None,
-    in_reply_to: Optional[str] = None,
-    references: Optional[str] = None,
-    body_format: Literal["plain", "html"] = "plain",
-    from_email: Optional[str] = None,
-    from_name: Optional[str] = None,
-    reply_to: Optional[str] = None,
-    attachments: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[str, Optional[str], int, List[str]]:
-    """Build a draft message with optional attachments."""
-    reply_subject = subject
-    if in_reply_to and not subject.lower().startswith("re:"):
-        reply_subject = f"Re: {subject}"
-
-    normalized_format = body_format.lower()
-    if normalized_format not in {"plain", "html"}:
-        raise ValueError("body_format must be either 'plain' or 'html'.")
-
-    attached_count = 0
-    attachment_errors: List[str] = []
-    message = EmailMessage(policy=SMTP)
-
-    message["Subject"] = reply_subject
-
-    if from_email:
-        if from_name:
-            safe_name = (
-                from_name.replace("\r", "").replace("\n", "").replace("\x00", "")
-            )
-            message["From"] = formataddr((safe_name, from_email))
-        else:
-            message["From"] = from_email
-
-    if to:
-        message["To"] = to
-    if cc:
-        message["Cc"] = cc
-    if bcc:
-        message["Bcc"] = bcc
-    if reply_to:
-        message["Reply-To"] = reply_to
-    if in_reply_to:
-        message["In-Reply-To"] = in_reply_to
-    if references:
-        message["References"] = references
-
-    if normalized_format == "html":
-        plain_body = _html_to_text(body).strip()
-        message.set_content(plain_body)
-        message.add_alternative(body, subtype="html")
-    else:
-        message.set_content(body)
-
-    for attachment in attachments or []:
-        if attachment.get("error"):
-            attachment_errors.append(_format_resolved_attachment_error(attachment))
-            continue
-
-        file_path = attachment.get("path")
-        filename = attachment.get("filename")
-        content_base64 = attachment.get("content")
-        resolved_bytes = attachment.get("_resolved_bytes")
-        mime_type = attachment.get("mime_type")
-
-        try:
-            if resolved_bytes is not None:
-                file_data = resolved_bytes
-                if not filename:
-                    filename = "attachment"
-                if not mime_type:
-                    mime_type = "application/octet-stream"
-            elif file_path:
-                path_obj = validate_file_path(file_path)
-                if not path_obj.exists():
-                    error = FileNotFoundError(f"File not found: {file_path}")
-                    logger.error(str(error))
-                    attachment_errors.append(
-                        _format_attachment_error(file_path, filename, error)
-                    )
-                    continue
-
-                file_data = _read_attachment_bytes(path_obj)
-
-                if not filename:
-                    filename = path_obj.name
-
-                if not mime_type:
-                    mime_type, _ = mimetypes.guess_type(str(path_obj))
-                    if not mime_type:
-                        mime_type = "application/octet-stream"
-            elif content_base64 is not None:
-                if not filename:
-                    error = ValueError("missing filename for base64 attachment")
-                    logger.warning(f"Skipping attachment: {error}")
-                    attachment_errors.append(
-                        _format_attachment_error(file_path, filename, error)
-                    )
-                    continue
-
-                normalized_content = "".join(content_base64.split())
-                try:
-                    file_data = base64.b64decode(normalized_content, validate=True)
-                except binascii.Error as exc:
-                    raise ValueError("Invalid base64 attachment content") from exc
-                if len(file_data) > MAX_EMAIL_ATTACHMENT_BYTES:
-                    raise ValueError(
-                        f"Attachment exceeds {MAX_EMAIL_ATTACHMENT_BYTES} bytes: {filename or 'attachment'}"
-                    )
-                if not mime_type:
-                    mime_type = "application/octet-stream"
-            else:
-                error = ValueError("missing path, content, and url")
-                logger.warning(f"Skipping attachment: {error}")
-                attachment_errors.append(
-                    _format_attachment_error(file_path, filename, error)
-                )
-                continue
-
-            safe_filename = None
-            if filename:
-                safe_filename = (
-                    filename.replace("\r", "").replace("\n", "").replace("\x00", "")
-                ) or None
-
-            main_type, sub_type = (
-                mime_type.split("/", 1)
-                if mime_type and "/" in mime_type
-                else ("application", "octet-stream")
-            )
-
-            attachment_kwargs = {
-                "maintype": main_type,
-                "subtype": sub_type,
-            }
-            if safe_filename is not None:
-                attachment_kwargs["filename"] = safe_filename
-            message.add_attachment(file_data, **attachment_kwargs)
-
-            attached_count += 1
-            logger.info(
-                f"Attached file: {safe_filename or file_path or 'attachment'} ({len(file_data)} bytes)"
-            )
-        except (binascii.Error, ValueError) as exc:
-            logger.error(f"Failed to decode attachment {filename or file_path}: {exc}")
-            attachment_errors.append(_format_attachment_error(file_path, filename, exc))
-            continue
-        except Exception as exc:
-            logger.error(f"Failed to attach {filename or file_path}: {exc}")
-            attachment_errors.append(_format_attachment_error(file_path, filename, exc))
-            continue
-
-    raw_message = base64.urlsafe_b64encode(message.as_bytes(policy=SMTP)).decode()
-    return raw_message, thread_id, attached_count, attachment_errors
-
-
 MAX_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024  # 25 MB Gmail attachment limit
 
 
@@ -1126,6 +965,56 @@ async def _resolve_url_attachments(
     return resolved
 
 
+def _extract_preserved_attachments(parsed_message: EmailMessage) -> List[dict[str, Any]]:
+    preserved_attachments: List[dict[str, Any]] = []
+
+    def visit(part: EmailMessage, parent_type: Optional[str] = None) -> None:
+        disposition = part.get_content_disposition()
+        content_id = part.get("Content-ID")
+        filename = part.get_filename()
+        part_type = part.get_content_type()
+
+        if part_type == "message/rfc822":
+            content_message = part.get_content()
+            content = (
+                content_message.as_bytes(policy=SMTP)
+                if hasattr(content_message, "as_bytes")
+                else part.as_bytes(policy=SMTP)
+            )
+        elif part.is_multipart():
+            if filename or disposition in {"attachment", "inline"} or content_id:
+                content = part.as_bytes(policy=SMTP)
+            else:
+                for child in part.iter_parts():
+                    visit(child, part_type)
+                return
+        else:
+            content = part.get_payload(decode=True)
+            if content is None:
+                return
+
+        if not (filename or disposition in {"attachment", "inline"} or content_id):
+            return
+
+        preserved_attachments.append(
+            {
+                "filename": filename,
+                "content": base64.b64encode(content).decode("ascii"),
+                "mime_type": part_type or "application/octet-stream",
+                "disposition": (
+                    "inline"
+                    if content_id and parent_type == "multipart/related"
+                    else disposition
+                ),
+                "content_id": content_id,
+                "_allow_missing_filename": True,
+            }
+        )
+
+    visit(parsed_message)
+    return preserved_attachments
+
+
 def _prepare_gmail_message(
     subject: str,
     body: str,
@@ -1138,35 +1027,14 @@ def _prepare_gmail_message(
     body_format: Literal["plain", "html"] = "plain",
     from_email: Optional[str] = None,
     from_name: Optional[str] = None,
-    attachments: Optional[List[Dict[str, str]]] = None,
+    reply_to: Optional[str] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
 ) -> tuple[str, Optional[str], int, List[str]]:
-    """
-    Prepare a Gmail message with threading and attachment support.
-
-    Args:
-        subject: Email subject
-        body: Email body content
-        to: Optional recipient email address
-        cc: Optional CC email address
-        bcc: Optional BCC email address
-        thread_id: Optional Gmail thread ID to reply within
-        in_reply_to: Optional Message-ID of the message being replied to
-        references: Optional chain of Message-IDs for proper threading
-        body_format: Content type for the email body ('plain' or 'html')
-        from_email: Optional sender email address
-        from_name: Optional sender display name (e.g., "Peter Hartree")
-        attachments: Optional list of attachments. Each can have 'path' (file path) OR 'content' (base64) + 'filename'
-
-    Returns:
-        Tuple of (raw_message, thread_id, attached_count, attachment_errors)
-        where raw_message is base64 encoded.
-    """
-    # Handle reply subject formatting
+    """Prepare a Gmail message with threading and attachment support."""
     reply_subject = subject
     if in_reply_to and not subject.lower().startswith("re:"):
         reply_subject = f"Re: {subject}"
 
-    # Prepare the email
     normalized_format = body_format.lower()
     if normalized_format not in {"plain", "html"}:
         raise ValueError("body_format must be either 'plain' or 'html'.")
@@ -1174,13 +1042,10 @@ def _prepare_gmail_message(
     attached_count = 0
     attachment_errors: List[str] = []
     message = EmailMessage(policy=SMTP)
-
     message["Subject"] = reply_subject
 
-    # Add sender if provided
     if from_email:
         if from_name:
-            # Sanitize from_name to prevent header injection
             safe_name = (
                 from_name.replace("\r", "").replace("\n", "").replace("\x00", "")
             )
@@ -1188,29 +1053,27 @@ def _prepare_gmail_message(
         else:
             message["From"] = from_email
 
-    # Add recipients if provided
     if to:
         message["To"] = to
     if cc:
         message["Cc"] = cc
     if bcc:
         message["Bcc"] = bcc
-
-    # Add reply headers for threading
+    if reply_to:
+        message["Reply-To"] = reply_to
     if in_reply_to:
         message["In-Reply-To"] = in_reply_to
-
     if references:
         message["References"] = references
 
     if normalized_format == "html":
-        # Include a text/plain fallback so reply drafts and recipients don't
-        # depend on clients successfully parsing HTML-only bodies.
         plain_body = _html_to_text(body).strip()
         message.set_content(plain_body)
         message.add_alternative(body, subtype="html")
+        html_part = message.get_body(preferencelist=("html",))
     else:
         message.set_content(body)
+        html_part = None
 
     for attachment in attachments or []:
         if attachment.get("error"):
@@ -1222,10 +1085,11 @@ def _prepare_gmail_message(
         content_base64 = attachment.get("content")
         resolved_bytes = attachment.get("_resolved_bytes")
         mime_type = attachment.get("mime_type")
+        disposition = attachment.get("disposition")
+        content_id = attachment.get("content_id")
 
         try:
             if resolved_bytes is not None:
-                # Pre-resolved from a URL by _resolve_url_attachments.
                 file_data = resolved_bytes
                 if not filename:
                     filename = "attachment"
@@ -1234,63 +1098,97 @@ def _prepare_gmail_message(
             elif file_path:
                 path_obj = validate_file_path(file_path)
                 if not path_obj.exists():
-                    logger.error(f"File not found: {file_path}")
+                    error = FileNotFoundError(f"File not found: {file_path}")
+                    logger.error(str(error))
+                    attachment_errors.append(
+                        _format_attachment_error(file_path, filename, error)
+                    )
                     continue
 
-                with open(path_obj, "rb") as f:
-                    file_data = f.read()
-
+                file_data = _read_attachment_bytes(path_obj)
                 if not filename:
                     filename = path_obj.name
-
                 if not mime_type:
                     mime_type, _ = mimetypes.guess_type(str(path_obj))
                     if not mime_type:
                         mime_type = "application/octet-stream"
-            elif content_base64:
-                if not filename:
-                    logger.warning("Skipping attachment: missing filename")
+            elif content_base64 is not None:
+                if (
+                    not filename
+                    and not content_id
+                    and not attachment.get("_allow_missing_filename")
+                ):
+                    error = ValueError("missing filename for base64 attachment")
+                    logger.warning(f"Skipping attachment: {error}")
+                    attachment_errors.append(
+                        _format_attachment_error(file_path, filename, error)
+                    )
                     continue
 
-                file_data = base64.b64decode(content_base64)
+                normalized_content = "".join(content_base64.split())
+                try:
+                    file_data = base64.b64decode(normalized_content, validate=True)
+                except binascii.Error as exc:
+                    raise ValueError("Invalid base64 attachment content") from exc
+                if len(file_data) > MAX_EMAIL_ATTACHMENT_BYTES:
+                    raise ValueError(
+                        f"Attachment exceeds {MAX_EMAIL_ATTACHMENT_BYTES} bytes: {filename or 'attachment'}"
+                    )
                 if not mime_type:
                     mime_type = "application/octet-stream"
             else:
-                logger.warning("Skipping attachment: missing path, content, and url")
+                error = ValueError("missing path, content, and url")
+                logger.warning(f"Skipping attachment: {error}")
+                attachment_errors.append(
+                    _format_attachment_error(file_path, filename, error)
+                )
                 continue
 
-            safe_filename = (
-                (filename or "attachment")
-                .replace("\r", "")
-                .replace("\n", "")
-                .replace("\x00", "")
-            ) or "attachment"
+            safe_filename = None
+            if filename:
+                safe_filename = (
+                    filename.replace("\r", "").replace("\n", "").replace("\x00", "")
+                ) or None
 
             main_type, sub_type = (
                 mime_type.split("/", 1)
                 if mime_type and "/" in mime_type
                 else ("application", "octet-stream")
             )
-            message.add_attachment(
-                file_data,
-                maintype=main_type,
-                subtype=sub_type,
-                filename=safe_filename,
-            )
+
+            if html_part is not None and disposition == "inline" and content_id:
+                html_part.add_related(
+                    file_data,
+                    maintype=main_type,
+                    subtype=sub_type,
+                    cid=content_id,
+                    filename=safe_filename,
+                    disposition="inline",
+                )
+            else:
+                attachment_kwargs = {"maintype": main_type, "subtype": sub_type}
+                if safe_filename is not None:
+                    attachment_kwargs["filename"] = safe_filename
+                if content_id:
+                    attachment_kwargs["cid"] = content_id
+                if disposition:
+                    attachment_kwargs["disposition"] = disposition
+                message.add_attachment(file_data, **attachment_kwargs)
+
             attached_count += 1
-            logger.info(f"Attached file: {safe_filename} ({len(file_data)} bytes)")
-        except (binascii.Error, ValueError) as e:
-            logger.error(f"Failed to decode attachment {filename or file_path}: {e}")
-            attachment_errors.append(_format_attachment_error(file_path, filename, e))
+            logger.info(
+                f"Attached file: {safe_filename or content_id or file_path or 'attachment'} ({len(file_data)} bytes)"
+            )
+        except (binascii.Error, ValueError) as exc:
+            logger.error(f"Failed to decode attachment {filename or file_path}: {exc}")
+            attachment_errors.append(_format_attachment_error(file_path, filename, exc))
             continue
-        except Exception as e:
-            logger.error(f"Failed to attach {filename or file_path}: {e}")
-            attachment_errors.append(_format_attachment_error(file_path, filename, e))
+        except Exception as exc:
+            logger.error(f"Failed to attach {filename or file_path}: {exc}")
+            attachment_errors.append(_format_attachment_error(file_path, filename, exc))
             continue
 
-    # Encode message
     raw_message = base64.urlsafe_b64encode(message.as_bytes(policy=SMTP)).decode()
-
     return raw_message, thread_id, attached_count, attachment_errors
 
 
@@ -2327,7 +2225,7 @@ async def _build_draft_request_body(
         draft_body = _append_signature_to_body(draft_body, body_format, signature_html)
 
     raw_message, thread_id_final, attached_count, attachment_errors = (
-        _build_draft_message(
+        _prepare_gmail_message(
             subject=subject,
             body=draft_body,
             body_format=body_format,
@@ -2415,9 +2313,10 @@ async def update_gmail_draft(
         Optional[DictList],
         Field(
             description=(
-                "Replacement attachments. Omit or pass an empty list for no attachments; "
-                "non-empty list replaces. Any invalid replacement attachment fails the update. "
-                "Each: 'url', 'path', OR 'content' + 'filename'. Optional 'mime_type'."
+                "Replacement attachments. Omit to preserve existing attachments; "
+                "empty list clears; non-empty list replaces. Any invalid replacement "
+                "attachment fails the update. Each: 'url', 'path', OR 'content' + "
+                "'filename'. Optional 'mime_type'."
             )
         ),
     ] = None,
@@ -2519,6 +2418,9 @@ async def update_gmail_draft(
             if parsed_message.get_body(preferencelist=("html",)) is not None
             else "plain"
         )
+    if attachments is None:
+        attachments = _extract_preserved_attachments(parsed_message)
+
     resolved_attachments = await _resolve_url_attachments(attachments)
 
     (
