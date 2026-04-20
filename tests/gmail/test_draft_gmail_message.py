@@ -244,9 +244,9 @@ async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks():
                     "<div>Alex Example</div>"
                     "<div>OPERATIONS LEAD / EXAMPLE CO</div>"
                     "<table>"
-                    '<tr><td><span>e.</span>&nbsp;<a href="mailto:alex@example.test">alex@example.test</a></td></tr>'
-                    "<tr><td><span>p.</span>&nbsp;<span>+1 555 0100</span></td></tr>"
-                    '<tr><td><span>w.</span>&nbsp;<a href="https://example.test/">example.test</a></td></tr>'
+                    '<tr><th><span>e.</span></th><td><a href="mailto:alex@example.test">alex@example.test</a></td></tr>'
+                    "<tr><td><span>p.</span></td><td><span>+1 555 0100</span></td></tr>"
+                    '<tr><td><span>w.</span></td><td><a href="https://example.test/">example.test</a></td></tr>'
                     "</table>"
                 ),
             }
@@ -331,6 +331,7 @@ async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks_whe
         "On Fri, 28 Mar 2026 10:00:00 -0400, Alice Example <alice@example.com> wrote:"
         in content
     )
+    assert "> Original plain text" in content
 
 
 @pytest.mark.asyncio

@@ -120,6 +120,7 @@ class _SignatureTextExtractor(HTMLParser):
     """Extract readable text from signature HTML, preserving block breaks."""
 
     _BLOCK_TAGS = {"br", "div", "p", "tr", "table", "tbody", "li"}
+    _CELL_TAGS = {"td", "th"}
 
     def __init__(self):
         super().__init__()
@@ -135,6 +136,12 @@ class _SignatureTextExtractor(HTMLParser):
     def handle_endtag(self, tag):
         if tag in ("script", "style"):
             self._skip = False
+        if (
+            tag in self._CELL_TAGS
+            and self._parts
+            and not self._parts[-1].endswith((" ", "\n"))
+        ):
+            self._parts.append(" ")
         if tag in self._BLOCK_TAGS and self._parts and self._parts[-1] != "\n":
             self._parts.append("\n")
 
