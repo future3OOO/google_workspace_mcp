@@ -232,6 +232,109 @@ async def test_draft_gmail_message_appends_gmail_signature_html():
 
 
 @pytest.mark.asyncio
+async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks():
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_sig"}
+    mock_service.users().settings().sendAs().list().execute.return_value = {
+        "sendAs": [
+            {
+                "sendAsEmail": "user@example.com",
+                "isPrimary": True,
+                "signature": (
+                    "<div>Alex Example</div>"
+                    "<div>OPERATIONS LEAD / EXAMPLE CO</div>"
+                    "<table>"
+                    '<tr><th><span>e.</span></th><td><a href="mailto:alex@example.test">alex@example.test</a></td></tr>'
+                    "<tr><td><span>p.</span></td><td><span>+1 555 0100</span></td></tr>"
+                    '<tr><td><span>w.</span></td><td><a href="https://example.test/">example.test</a></td></tr>'
+                    "</table>"
+                ),
+            }
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        to="recipient@example.com",
+        subject="Signature test",
+        body="Hello",
+        body_format="plain",
+        include_signature=True,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+    content = parsed.get_content().replace("\r\n", "\n").strip()
+
+    assert content == (
+        "Hello\n\n"
+        "Alex Example\n"
+        "OPERATIONS LEAD / EXAMPLE CO\n"
+        "e. alex@example.test\n"
+        "p. +1 555 0100\n"
+        "w. example.test"
+    )
+
+
+@pytest.mark.asyncio
+async def test_draft_gmail_message_preserves_plaintext_signature_line_breaks_when_quoting():
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    mock_service.users().settings().sendAs().list().execute.return_value = {
+        "sendAs": [
+            {
+                "sendAsEmail": "user@example.com",
+                "isPrimary": True,
+                "signature": (
+                    "<div>Alex Example</div>"
+                    "<div>OPERATIONS LEAD / EXAMPLE CO</div>"
+                    '<div><span>e.</span>&nbsp;<a href="mailto:alex@example.test">alex@example.test</a></div>'
+                ),
+            }
+        ]
+    }
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message(
+                "<msg1@example.com>",
+                from_value="Alice Example <alice@example.com>",
+                text="Original plain text",
+            )
+        ]
+    }
+
+    await _unwrap(draft_gmail_message)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        subject="Meeting tomorrow",
+        body="Thanks for the update.",
+        body_format="plain",
+        thread_id="thread123",
+        quote_original=True,
+        include_signature=True,
+    )
+
+    create_kwargs = (
+        mock_service.users.return_value.drafts.return_value.create.call_args.kwargs
+    )
+    parsed = _parse_raw_message(create_kwargs["body"]["message"]["raw"])
+    content = parsed.get_content().replace("\r\n", "\n").strip()
+
+    assert (
+        "Thanks for the update.\n\n"
+        "Alex Example\n"
+        "OPERATIONS LEAD / EXAMPLE CO\n"
+        "e. alex@example.test\n\n"
+        "On Fri, 28 Mar 2026 10:00:00 -0400, Alice Example <alice@example.com> wrote:"
+        in content
+    )
+    assert "> Original plain text" in content
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_builds_threaded_html_reply_as_multipart_alternative():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
