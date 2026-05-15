@@ -115,6 +115,7 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 
 ### update_gmail_draft
 Replace an existing draft by draft ID. Supports the same body, recipient, threading, send-as, signature, quote, and attachment options as draft creation.
+Warning: this operation overwrites draft content and is not reversible.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
@@ -134,10 +135,11 @@ Replace an existing draft by draft ID. Supports the same body, recipient, thread
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
-| complete_replacement | boolean | yes | false | Must be true to confirm full draft replacement |
+| complete_replacement | boolean | no | false | Must be true to confirm full draft replacement; defaults to false if omitted |
 
 ### delete_gmail_draft
 Delete an existing Gmail draft by draft ID.
+Warning: this operation deletes the draft and is not reversible.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|

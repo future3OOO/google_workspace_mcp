@@ -2328,6 +2328,9 @@ async def _build_gmail_draft_request_body(
     quote_original: bool,
 ) -> tuple[dict, int, int]:
     """Build the Gmail draft request body shared by create and update."""
+    if quote_original and not thread_id:
+        raise UserInputError("quote_original=true requires thread_id.")
+
     sender_email = from_email or user_google_email
     draft_body = body
     signature_html = ""
