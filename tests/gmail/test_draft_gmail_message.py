@@ -17,7 +17,9 @@ import gmail.gmail_tools as gmail_tools
 from core.utils import UserInputError
 from gmail.gmail_tools import (
     draft_gmail_message,
+    delete_gmail_draft,
     send_gmail_message,
+    update_gmail_draft,
     _resolve_url_attachments,
     _try_read_local_attachment,
 )
@@ -108,6 +110,10 @@ def _parse_raw_message(raw_message: str):
     return BytesParser(policy=policy.default).parsebytes(
         base64.urlsafe_b64decode(raw_message)
     )
+
+
+def _tool_annotations(tool):
+    return tool.__fastmcp__.annotations
 
 
 @pytest.mark.asyncio
@@ -524,6 +530,71 @@ async def test_draft_gmail_message_fetches_thread_once_when_quoting_reply():
 
 
 @pytest.mark.asyncio
+async def test_draft_lifecycle_requires_thread_id_when_quoting_reply():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="quote_original=true requires thread_id"):
+        await _unwrap(draft_gmail_message)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            to="recipient@example.com",
+            subject="Meeting tomorrow",
+            body="Thanks for the update.",
+            quote_original=True,
+            include_signature=False,
+        )
+
+    with pytest.raises(UserInputError, match="quote_original=true requires thread_id"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            subject="Meeting tomorrow",
+            body="Thanks for the update.",
+            quote_original=True,
+            include_signature=False,
+            complete_replacement=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_draft_lifecycle_requires_quotable_thread_context():
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft_reply"}
+    mock_service.users().threads().get().execute.return_value = {"messages": []}
+
+    with pytest.raises(
+        UserInputError, match="quote_original=true requires a readable thread message"
+    ):
+        await _unwrap(draft_gmail_message)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            to="recipient@example.com",
+            subject="Meeting tomorrow",
+            body="Thanks for the update.",
+            thread_id="thread123",
+            quote_original=True,
+            include_signature=False,
+        )
+
+    with pytest.raises(
+        UserInputError, match="quote_original=true requires a readable thread message"
+    ):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            subject="Meeting tomorrow",
+            body="Thanks for the update.",
+            thread_id="thread123",
+            quote_original=True,
+            include_signature=False,
+            complete_replacement=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_autofills_reply_headers_from_thread():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
@@ -912,6 +983,107 @@ async def test_draft_gmail_message_with_url_attachment(monkeypatch):
     raw_bytes = base64.urlsafe_b64decode(create_kwargs["body"]["message"]["raw"])
     assert b"Content-Disposition: attachment;" in raw_bytes
     assert b"doc.pdf" in raw_bytes
+
+
+@pytest.mark.asyncio
+async def test_update_gmail_draft_derives_reply_context_and_retries_write():
+    mock_service = Mock()
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft123"}
+    mock_service.users().threads().get().execute.return_value = {
+        "messages": [
+            _thread_message(
+                "<original@example.com>",
+                from_value="Owner <owner@example.com>",
+                reply_to="reply@example.com",
+            )
+        ]
+    }
+
+    result = await _unwrap(update_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id=" draft123 ",
+        thread_id="thread123",
+        subject="Re: Meeting tomorrow",
+        body="Updated reply",
+        include_signature=False,
+        complete_replacement=True,
+    )
+
+    assert result == "Draft updated! Draft ID: draft123"
+    update_kwargs = (
+        mock_service.users.return_value.drafts.return_value.update.call_args.kwargs
+    )
+    assert update_kwargs["userId"] == "me"
+    assert update_kwargs["id"] == "draft123"
+    assert update_kwargs["body"]["message"]["threadId"] == "thread123"
+
+    execute_kwargs = mock_service.users.return_value.drafts.return_value.update.return_value.execute.call_args.kwargs
+    assert execute_kwargs["num_retries"] == gmail_tools.GOOGLE_API_WRITE_RETRIES
+
+    message = _parse_raw_message(update_kwargs["body"]["message"]["raw"])
+    assert message["To"] == "reply@example.com"
+    assert message["In-Reply-To"] == "<original@example.com>"
+    assert message["References"] == "<original@example.com>"
+
+    with pytest.raises(UserInputError, match="fully replaces the draft"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            thread_id="thread123",
+            subject="Re: Meeting tomorrow",
+            body="Updated reply",
+            include_signature=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_delete_gmail_draft_marks_destructive_and_retries_write():
+    update_annotations = _tool_annotations(update_gmail_draft)
+    delete_annotations = _tool_annotations(delete_gmail_draft)
+    assert update_annotations.readOnlyHint is False
+    assert update_annotations.destructiveHint is True
+    assert delete_annotations.readOnlyHint is False
+    assert delete_annotations.destructiveHint is True
+
+    mock_service = Mock()
+    mock_service.users().drafts().delete().execute.return_value = {}
+
+    result = await _unwrap(delete_gmail_draft)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        draft_id=" draft123 ",
+    )
+
+    assert result == "Draft deleted! Draft ID: draft123"
+    delete_kwargs = (
+        mock_service.users.return_value.drafts.return_value.delete.call_args.kwargs
+    )
+    assert delete_kwargs == {"userId": "me", "id": "draft123"}
+    execute_kwargs = mock_service.users.return_value.drafts.return_value.delete.return_value.execute.call_args.kwargs
+    assert execute_kwargs["num_retries"] == gmail_tools.GOOGLE_API_WRITE_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_update_and_delete_gmail_draft_require_draft_id():
+    mock_service = Mock()
+
+    with pytest.raises(UserInputError, match="draft_id is required"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id=" ",
+            subject="Subject",
+            body="Body",
+        )
+
+    with pytest.raises(UserInputError, match="draft_id is required"):
+        await _unwrap(delete_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id=" ",
+        )
 
 
 @pytest.mark.asyncio

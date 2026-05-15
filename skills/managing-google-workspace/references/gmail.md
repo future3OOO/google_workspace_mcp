@@ -4,7 +4,7 @@ MCP tools for Gmail message search, sending, drafting, labels, and filters. All 
 
 ## Contents
 - Search & Read: search_gmail_messages, get_gmail_message_content, get_gmail_messages_content_batch, get_gmail_thread_content, get_gmail_threads_content_batch, get_gmail_attachment_content
-- Send & Draft: send_gmail_message, draft_gmail_message
+- Send & Draft: send_gmail_message, draft_gmail_message, update_gmail_draft, delete_gmail_draft
 - Label Management: list_gmail_labels, manage_gmail_label, modify_gmail_message_labels, batch_modify_gmail_message_labels
 - Filter Management: list_gmail_filters, manage_gmail_filter
 - Tips
@@ -112,6 +112,40 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+
+### update_gmail_draft
+Replace an existing draft by draft ID. Supports the same body, recipient, threading, send-as, signature, quote, and attachment options as draft creation.
+Warning: this operation overwrites draft content and is not reversible.
+Callers must pass `complete_replacement=true`; omitting it leaves the default false guard in place and the call fails before Gmail is updated.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| draft_id | string | yes | | Gmail draft ID |
+| subject | string | yes | | Replacement subject |
+| body | string | yes | | Replacement body |
+| body_format | string | no | "plain" | "plain" or "html" |
+| user_google_email | string | yes | | |
+| to | string | no | | Optional replacement recipient |
+| cc | string | no | | Optional replacement CC |
+| bcc | string | no | | Optional replacement BCC |
+| from_name | string | no | | Optional sender display name |
+| from_email | string | no | | Optional Send As alias |
+| thread_id | string | no | | Optional replacement thread ID |
+| in_reply_to | string | no | | Optional RFC Message-ID |
+| references | string | no | | Optional Message-ID chain |
+| attachments | array | no | | Same format as send |
+| include_signature | boolean | no | true | Append Gmail signature if available |
+| quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+| complete_replacement | boolean | no | false | Must be true to confirm full draft replacement; defaults to false if omitted |
+
+### delete_gmail_draft
+Delete an existing Gmail draft by draft ID.
+Warning: this operation deletes the draft and is not reversible.
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| draft_id | string | yes | | Gmail draft ID |
+| user_google_email | string | yes | | |
 
 ---
 
