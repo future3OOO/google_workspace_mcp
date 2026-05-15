@@ -978,7 +978,7 @@ async def test_delete_gmail_draft_marks_destructive_and_retries_write():
     update_annotations = _tool_annotations(update_gmail_draft)
     delete_annotations = _tool_annotations(delete_gmail_draft)
     assert update_annotations.readOnlyHint is False
-    assert update_annotations.destructiveHint is False
+    assert update_annotations.destructiveHint is True
     assert delete_annotations.readOnlyHint is False
     assert delete_annotations.destructiveHint is True
 

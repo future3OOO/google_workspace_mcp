@@ -134,6 +134,7 @@ Replace an existing draft by draft ID. Supports the same body, recipient, thread
 | attachments | array | no | | Same format as send |
 | include_signature | boolean | no | true | Append Gmail signature if available |
 | quote_original | boolean | no | false | Include original message as quoted reply (requires thread_id) |
+| complete_replacement | boolean | yes | false | Must be true to confirm full draft replacement |
 
 ### delete_gmail_draft
 Delete an existing Gmail draft by draft ID.

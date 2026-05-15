@@ -2413,7 +2413,7 @@ async def _build_gmail_draft_request_body(
     title="Update Gmail Draft",
     annotations=ToolAnnotations(
         readOnlyHint=False,
-        destructiveHint=False,
+        destructiveHint=True,
         idempotentHint=False,
         openWorldHint=True,
     ),
