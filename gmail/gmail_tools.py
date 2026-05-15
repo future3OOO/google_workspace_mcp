@@ -2357,6 +2357,9 @@ async def _build_gmail_draft_request_body(
         )
 
     target_reply = reply_context.get("target") if reply_context else None
+    if quote_original and not target_reply:
+        raise UserInputError("quote_original=true requires a readable thread message.")
+
     if thread_id and not to and target_reply:
         to = target_reply.get("reply_to") or target_reply.get("from") or to
     if thread_id and not subject.strip() and target_reply:

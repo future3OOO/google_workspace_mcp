@@ -558,6 +558,43 @@ async def test_draft_lifecycle_requires_thread_id_when_quoting_reply():
 
 
 @pytest.mark.asyncio
+async def test_draft_lifecycle_requires_quotable_thread_context():
+    mock_service = Mock()
+    mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
+    mock_service.users().drafts().update().execute.return_value = {"id": "draft_reply"}
+    mock_service.users().threads().get().execute.return_value = {"messages": []}
+
+    with pytest.raises(
+        UserInputError, match="quote_original=true requires a readable thread message"
+    ):
+        await _unwrap(draft_gmail_message)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            to="recipient@example.com",
+            subject="Meeting tomorrow",
+            body="Thanks for the update.",
+            thread_id="thread123",
+            quote_original=True,
+            include_signature=False,
+        )
+
+    with pytest.raises(
+        UserInputError, match="quote_original=true requires a readable thread message"
+    ):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            subject="Meeting tomorrow",
+            body="Thanks for the update.",
+            thread_id="thread123",
+            quote_original=True,
+            include_signature=False,
+            complete_replacement=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_draft_gmail_message_autofills_reply_headers_from_thread():
     mock_service = Mock()
     mock_service.users().drafts().create().execute.return_value = {"id": "draft_reply"}
