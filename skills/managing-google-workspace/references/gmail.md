@@ -116,6 +116,7 @@ Create a draft. Same capabilities as send but with additional signature/quoting 
 ### update_gmail_draft
 Replace an existing draft by draft ID. Supports the same body, recipient, threading, send-as, signature, quote, and attachment options as draft creation.
 Warning: this operation overwrites draft content and is not reversible.
+Callers must pass `complete_replacement=true`; omitting it leaves the default false guard in place and the call fails before Gmail is updated.
 
 | Parameter | Type | Required | Default | Notes |
 |-----------|------|----------|---------|-------|
