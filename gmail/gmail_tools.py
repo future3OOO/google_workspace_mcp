@@ -2484,6 +2484,12 @@ async def update_gmail_draft(
             description="Whether to append the Gmail signature from Settings > Signature when available. Defaults to true."
         ),
     ] = True,
+    complete_replacement: Annotated[
+        bool,
+        Field(
+            description="Must be true to confirm this call replaces the full draft message, including recipients, thread headers, and attachments."
+        ),
+    ] = False,
     quote_original: Annotated[
         bool,
         Field(
@@ -2497,6 +2503,10 @@ async def update_gmail_draft(
     )
 
     draft_id = _require_draft_id(draft_id)
+    if not complete_replacement:
+        raise UserInputError(
+            "update_gmail_draft fully replaces the draft. Set complete_replacement=true only after providing the complete replacement recipients, thread fields, and attachments."
+        )
     (
         draft_body,
         attached_count,

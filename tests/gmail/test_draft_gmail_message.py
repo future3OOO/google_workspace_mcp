@@ -942,6 +942,7 @@ async def test_update_gmail_draft_derives_reply_context_and_retries_write():
         subject="Re: Meeting tomorrow",
         body="Updated reply",
         include_signature=False,
+        complete_replacement=True,
     )
 
     assert result == "Draft updated! Draft ID: draft123"
@@ -959,6 +960,17 @@ async def test_update_gmail_draft_derives_reply_context_and_retries_write():
     assert message["To"] == "reply@example.com"
     assert message["In-Reply-To"] == "<original@example.com>"
     assert message["References"] == "<original@example.com>"
+
+    with pytest.raises(UserInputError, match="fully replaces the draft"):
+        await _unwrap(update_gmail_draft)(
+            service=mock_service,
+            user_google_email="user@example.com",
+            draft_id="draft123",
+            thread_id="thread123",
+            subject="Re: Meeting tomorrow",
+            body="Updated reply",
+            include_signature=False,
+        )
 
 
 @pytest.mark.asyncio
